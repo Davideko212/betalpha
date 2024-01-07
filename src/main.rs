@@ -18,6 +18,8 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{broadcast::channel, mpsc::Sender, RwLock},
 };
+use regex::Regex;
+use rand::{Rng, thread_rng};
 
 mod byte_man;
 pub use byte_man::*;
@@ -288,13 +290,13 @@ pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> tokio::io::Res
     to_compress.extend_from_slice(&chunk.sky_light);
 
     unsafe {
-        let mut len = libz_sys::compressBound(to_compress.len() as u64);
+        let mut len = libz_sys::compressBound(to_compress.len() as u32);
         let mut compressed_bytes = vec![0u8; len as usize];
         libz_sys::compress(
             compressed_bytes.as_mut_ptr(),
             &mut len,
             to_compress.as_ptr(),
-            to_compress.len() as u64,
+            to_compress.len() as u32,
         );
 
         map_chunk.extend_from_slice(&(len as i32).to_be_bytes());
@@ -317,6 +319,8 @@ async fn parse_packet(
     state: &RwLock<State>,
     entity_tx: &Sender<(i32, PositionAndLook)>,
     logged_in: &AtomicBool,
+    user: &mut String,
+    chat: &mut Vec<String>
 ) -> Result<usize, Error> {
     let mut buf = Cursor::new(&buf[..]);
 
@@ -447,12 +451,18 @@ async fn parse_packet(
         2 => {
             // skip(&mut buf, 1)?;
             let username = get_string(&mut buf)?;
+            *user = username.clone();
             let ch = ClientHandshake { username };
             stream.write_all(&[2, 0, 1, b'-']).await.unwrap();
             stream.flush().await.unwrap();
             println!("ch: {ch:?}");
         }
-
+        3 => {
+            let message = get_string(&mut buf)?;
+            chat.push(message);
+            stream.flush().await.unwrap();
+            //println!("chat_message: {message:?}")
+        }
         0x0A => {
             let on_ground = get_u8(&mut buf)? != 0;
             // println!("on_ground: {on_ground}");
@@ -548,8 +558,8 @@ pub struct PositionAndLook {
 }
 
 async fn handle_client(
-    mut stream: TcpStream,
-    chunks: &[Chunk],
+    stream: TcpStream,
+    chunks: &'static [Chunk],
     entity_tx: Sender<(i32, PositionAndLook)>,
     mut entity_move_rx: tokio::sync::broadcast::Receiver<(
         i32,
@@ -562,6 +572,12 @@ async fn handle_client(
     let stream = Arc::new(RwLock::new(stream));
     let keep_alive_stream = stream.clone();
     let pos_update_stream = stream.clone();
+    let chat_stream = stream.clone();
+    let mob_stream = stream.clone();
+    let chat_msg_vec = Arc::new(RwLock::new(vec![]));
+    let chat_msg_vec_clone = chat_msg_vec.clone();
+    let user = Arc::new(RwLock::new(String::from("")));
+    let user_clone = user.clone();
 
     let mut state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -691,6 +707,57 @@ async fn handle_client(
         }
     });
 
+    // chat
+    tokio::task::spawn(async move {
+        loop {
+            let read_vec = chat_msg_vec_clone.read().await.to_vec();
+            let username = user_clone.read().await.to_string();
+            for msg in read_vec {
+                send_chat_msg(chat_stream.clone(), &username, msg).await;
+            }
+            chat_msg_vec_clone.write().await.clear();
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    // mob spawning
+    tokio::task::spawn(async move {
+        loop {
+            /*for chunk in chunks.iter() {
+                let mut rng = thread_rng();
+                if rng.gen_range(0..10) != 0 {
+                    continue;
+                }
+
+                // only passive mobs for now
+                // pig, sheep, cow, chicken <--> 90-93
+                let mobtype = rng.gen_range(90..94);
+                /*
+                5) Chose a completely random location L1 within the chunk.
+                6) If L1 is inside a rock or other solid area, bail out of the spawn function completely. Ignore the remaining chunks.
+                7) If L1 is legal it will be the location of a mob pack, pick 6 locations roughly normally distributed around L1, L(i)
+
+                Individual Spawn Loop:
+                8) Check that current L(i) is unoccupied, has spawnable ground below, and an empty space above.
+                9) If check fails, get next L(i) and go back to 8).
+                10) Check that L(i) is 24m+ from (any) player. Also check they are 24m+ from the spawn point. If not, get next L(i) and go back to 8).
+                11) Prepare mob for spawning (position, orientation, etc).
+                12) LGT(i) = light level of L(i)
+                13) (passive mob) If LGT(i) > 8, spawn mob at L(i).
+                14) Get next L(i) and go back to 8).
+                15) When done with all L(i), go back to 2).
+                */
+            }*/
+
+            //mob_spawn(mob_stream.clone()).await;
+            //tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            //mob_destroy(mob_stream.clone()).await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+
     loop {
         if let Ok(n) = parse_packet(
             &mut *stream.write().await,
@@ -699,6 +766,8 @@ async fn handle_client(
             &state,
             &entity_tx,
             &logged_in,
+            &mut *user.write().await,
+            &mut *chat_msg_vec.write().await
         )
         .await
         {
@@ -710,4 +779,43 @@ async fn handle_client(
             break;
         }
     }
+}
+
+async fn send_chat_msg(chat_stream: Arc<RwLock<TcpStream>>, user: &String, msg: String) {
+    let re = Regex::new(r"( )+").unwrap();
+    let formatted = format!("<{}> {}", user, re.replace_all(&msg, " "));
+
+    let mut chat_packet = vec![3];
+    chat_packet.extend_from_slice(&(formatted.len() as u16).to_be_bytes());
+    chat_packet.extend_from_slice(formatted.as_bytes());
+    println!("chat_packet: {chat_packet:?}");
+    chat_stream.write().await.write_all(&chat_packet).await.unwrap();
+    chat_stream.write().await.flush().await.unwrap();
+}
+
+async fn mob_spawn(mob_stream: Arc<RwLock<TcpStream>>) {
+    let mut init_packet = vec![0x1E];
+    init_packet.extend_from_slice(&420_i32.to_be_bytes()); // EID (420)
+    println!("init_packet: {init_packet:?}");
+    mob_stream.write().await.write_all(&init_packet).await.unwrap();
+    mob_stream.write().await.flush().await.unwrap();
+
+    /*let mut spawn_packet = vec![0x18];
+    spawn_packet.extend_from_slice(&420_i32.to_be_bytes()); // EID (420)
+    spawn_packet.extend_from_slice(&90_u8.to_be_bytes()); // Type (pig)
+    spawn_packet.extend_from_slice(&0_i32.to_be_bytes()); // x (0)
+    spawn_packet.extend_from_slice(&75_i32.to_be_bytes()); // y (75)
+    spawn_packet.extend_from_slice(&(-5_i32).to_be_bytes()); // z (-5)
+    spawn_packet.extend_from_slice(&0_u8.to_be_bytes()); // yaw (0)
+    spawn_packet.extend_from_slice(&0_u8.to_be_bytes()); // pitch (0)
+    println!("spawn_packet: {spawn_packet:?}");
+    mob_stream.write().await.write_all(&spawn_packet).await.unwrap();
+    mob_stream.write().await.flush().await.unwrap();*/
+}
+
+async fn mob_destroy(mob_stream: Arc<RwLock<TcpStream>>) {
+    let mut destroy_packet = vec![0x1D];
+    destroy_packet.extend_from_slice(&420_i32.to_be_bytes()); // EID (420)
+    mob_stream.write().await.write_all(&destroy_packet).await.unwrap();
+    mob_stream.write().await.flush().await.unwrap();
 }
