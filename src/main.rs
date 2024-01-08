@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     future::Future,
-    io::{Cursor, Read, Write},
+    io::Cursor,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicI32, Ordering},
@@ -11,13 +11,13 @@ use std::{
 
 use bytes::{Buf, BytesMut};
 
-use nbt::{Blob, Map, Value};
+use nbt::{Blob, Value};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
-        broadcast::{self, channel},
+        broadcast::{self, error::TryRecvError},
         mpsc::{self, Sender},
         RwLock,
     },
@@ -25,8 +25,13 @@ use tokio::{
 use regex::Regex;
 use rand::{Rng, thread_rng};
 
-mod byte_man;
-pub use byte_man::*;
+mod packet;
+
+use crate::packet::PacketError;
+use crate::packet::{util::*, Deserialize, Serialize};
+
+// mod byte_man;
+// pub use byte_man::*;
 
 mod entities;
 
@@ -52,16 +57,12 @@ fn test_base_conv() {
     println!("{}", (12 << 4));
 }
 
-extern crate libz_sys;
-
-use libz_sys::{deflate, deflateEnd, deflateInit_, z_stream, Z_OK, Z_STREAM_END};
-
 use crate::entities::spawned_named_entity;
 
 fn test_libz() {
     // libz_sys::compress(dest, destLen, source, sourceLen)
     // Original data
-    let original_data = b"Hello, world!";
+    let _original_data = b"Hello, world!";
     /*
     // Initialize the z_stream structure
     let mut stream = z_stream {
@@ -113,7 +114,7 @@ type PacketHandler = Box<
 >;
 
 #[inline]
-pub async fn incomplete(buf: &mut Cursor<&[u8]>, stream: &mut TcpStream) -> Result<(), Error> {
+pub async fn incomplete(_buf: &mut Cursor<&[u8]>, _stream: &mut TcpStream) -> Result<(), Error> {
     Err(Error::Incomplete)
 }
 
@@ -220,43 +221,95 @@ async fn main() {
             })
         })
         .collect::<Vec<_>>();
-
     let chunks = &*Box::leak(chunks.into_boxed_slice());
-    let (pos_and_look_tx, mut pos_and_look_rx) = mpsc::channel::<(i32, PositionAndLook)>(256);
+    let (pos_and_look_tx, mut pos_and_look_rx) =
+        mpsc::channel::<(i32, PositionAndLook, Option<String>)>(256);
 
-    let (pos_and_look_update_tx, mut pos_and_look_update_rx) =
-        broadcast::channel(256);
+    let (pos_and_look_update_tx, _pos_and_look_update_rx) = broadcast::channel(256);
+    let (tx_destroy_self_entity, mut rx_entity_destroy) = mpsc::channel::<i32>(100);
+    let (tx_destroy_entities, _) = broadcast::channel(256);
 
+    // several maps - avoid cloning of username (remove username from state -> username lookup ?)
     let mut entity_positions = std::collections::HashMap::new();
+    let mut entity_username = std::collections::HashMap::new();
 
     let pos_and_look_update_tx_inner = pos_and_look_update_tx.clone();
+    let tx_destroy_entities_inner = tx_destroy_entities.clone();
     tokio::spawn(async move {
         loop {
-            if let Some((eid, pos_and_look)) = pos_and_look_rx.recv().await {
+            // receive position updates, log in (username)
+            if let Ok((eid, pos_and_look, username)) = pos_and_look_rx.try_recv() {
                 let prev_pos_and_look = entity_positions.insert(eid, pos_and_look);
+                if let Some(username) = username {
+                    entity_username.insert(eid, username);
+                }
+
+                // if a player logs in (prev pos is none), not moving entities should be sent
+                if prev_pos_and_look.is_none() {
+                    for (eid, pos_and_look) in &entity_positions {
+                        pos_and_look_update_tx_inner
+                            .send((
+                                *eid,
+                                entities::Type::Player(entity_username[eid].clone()),
+                                *pos_and_look,
+                                None,
+                            ))
+                            .unwrap();
+                    }
+                }
+
                 pos_and_look_update_tx_inner
-                    .send((eid, entities::Type::Player, pos_and_look, prev_pos_and_look))
+                    .send((
+                        eid,
+                        entities::Type::Player(entity_username[&eid].clone()),
+                        pos_and_look,
+                        prev_pos_and_look,
+                    ))
                     .unwrap();
             }
+
+            if let Ok(eid) = rx_entity_destroy.try_recv() {
+                entity_positions.remove(&eid);
+                entity_username.remove(&eid);
+
+                tx_destroy_entities_inner.send(eid).unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
         }
     });
 
     loop {
-        let channels = Channels {
+        let mut channels = Channels {
             tx_player_pos_and_look: pos_and_look_tx.clone(),
             rx_entity_movement: pos_and_look_update_tx.clone().subscribe(),
+            tx_destroy_self_entity: tx_destroy_self_entity.clone(),
+            rx_destroy_entities: tx_destroy_entities.clone().subscribe(),
         };
 
         let stream = listener.accept().await.unwrap();
         tokio::spawn(async move {
+            let rx_entity_movement = &mut channels.rx_entity_movement;
+            let rx_destroy_entities = &mut channels.rx_destroy_entities;
+
+            // used to clear the prevoius buffered moves ..
+            while rx_entity_movement.try_recv().err() != Some(TryRecvError::Empty) {}
+            while rx_destroy_entities.try_recv().err() != Some(TryRecvError::Empty) {}
+
             handle_client(stream.0, chunks, channels).await;
         });
     }
 }
 
 pub struct Channels {
-    tx_player_pos_and_look: mpsc::Sender<(i32, PositionAndLook)>,
-    rx_entity_movement: broadcast::Receiver<(i32, entities::Type, PositionAndLook, Option<PositionAndLook>)>,
+    tx_player_pos_and_look: mpsc::Sender<(i32, PositionAndLook, Option<String>)>,
+    rx_entity_movement: broadcast::Receiver<(
+        i32,
+        entities::Type,
+        PositionAndLook,
+        Option<PositionAndLook>,
+    )>,
+    tx_destroy_self_entity: mpsc::Sender<i32>,
+    rx_destroy_entities: broadcast::Receiver<i32>,
 }
 
 const SIZE: usize = 1024 * 8;
@@ -270,34 +323,29 @@ pub enum Error {
     Incomplete,
 }
 
-pub async fn keep_alive(_buf: &mut Cursor<&[u8]>, stream: &mut TcpStream) -> Result<(), Error> {
+pub async fn keep_alive(
+    _buf: &mut Cursor<&[u8]>,
+    stream: &mut TcpStream,
+) -> Result<(), PacketError> {
     let packet = vec![0];
     stream.write_all(&packet).await.unwrap();
     stream.flush().await.unwrap();
     Ok(())
 }
 
-pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> tokio::io::Result<()> {
-    let mut pre_chunk = vec![0x32];
-    pre_chunk.extend_from_slice(&chunk.chunk_x.to_be_bytes());
-    pre_chunk.extend_from_slice(&chunk.chunk_z.to_be_bytes());
-    pre_chunk.extend_from_slice(&[1u8]);
+pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> Result<(), PacketError> {
+    packet::PreChunkPacket {
+        x: chunk.chunk_x,
+        z: chunk.chunk_z,
+        mode: true,
+    }
+    .send(stream)
+    .await?;
 
-    stream.write_all(&pre_chunk).await?;
-    stream.flush().await?;
-
-    let mut map_chunk = vec![0x33];
+    // let mut map_chunk = vec![0x33];
     let x = chunk.chunk_x * 16;
     let y = 0i16;
     let z = chunk.chunk_z * 16;
-
-    map_chunk.extend_from_slice(&x.to_be_bytes());
-    map_chunk.extend_from_slice(&y.to_be_bytes());
-    map_chunk.extend_from_slice(&z.to_be_bytes());
-
-    map_chunk.extend_from_slice(&15u8.to_be_bytes());
-    map_chunk.extend_from_slice(&127u8.to_be_bytes());
-    map_chunk.extend_from_slice(&15u8.to_be_bytes());
 
     let mut to_compress = chunk.blocks.clone();
     to_compress.extend_from_slice(&chunk.data);
@@ -314,12 +362,21 @@ pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> tokio::io::Res
             to_compress.len() as u32,
         );
 
-        map_chunk.extend_from_slice(&(len as i32).to_be_bytes());
-        map_chunk.extend_from_slice(&compressed_bytes[..len as usize]);
+        packet::MapChunkPacket {
+            x,
+            y,
+            z,
+            size_x: 15,
+            size_y: 127,
+            size_z: 15,
+            compressed_size: len as i32,
+            compressed_data: compressed_bytes[..len as usize].to_vec(),
+        }
+        .send(stream)
+        .await?;
     }
 
-    stream.write_all(&map_chunk).await?;
-    stream.flush().await
+    Ok(())
 }
 fn get_id() -> i32 {
     static COUNTER: AtomicI32 = AtomicI32::new(1);
@@ -332,114 +389,187 @@ async fn parse_packet(
     buf: &BytesMut,
     chunks: &[Chunk],
     state: &RwLock<State>,
-    entity_tx: &Sender<(i32, PositionAndLook)>,
+    entity_tx: &Sender<(i32, PositionAndLook, Option<String>)>,
+    tx_disconnect: &Sender<i32>,
     logged_in: &AtomicBool,
     user: &mut String,
     chat: &mut Vec<String>
-) -> Result<usize, Error> {
+) -> Result<usize, PacketError> {
     let mut buf = Cursor::new(&buf[..]);
 
-    let packet_id = get_u8(&mut buf)?;
+    // let packet_id = get_u8(&mut buf)?;
     // println!("packet_id: {packet_id}");
 
     // println!("buf: {buf:?}");
 
-    match packet_id {
-        0 => keep_alive(&mut buf, stream).await?,
-        1 => {
-            let protocol_version = get_i32(&mut buf)?;
-            // skip(&mut buf, 1)?;
-            let username = get_string(&mut buf)?;
-            // skip(&mut buf, 1)?;
-            let _password = get_string(&mut buf)?;
-            let _map_seed = get_u64(&mut buf)?;
-            let _dimension = get_i8(&mut buf)?;
+    // some packets may accumulate, therefore process all of them (happened especially for 0x0A)
+    while let Ok(packet_id) = get_u8(&mut buf) {
+        match packet_id {
+            0 => keep_alive(&mut buf, stream).await?,
+            1 => {
+                let login_request = packet::LoginRequestPacket::nested_deserialize(&mut buf)?;
+                let protocol_version = login_request.protocol_version;
+                let username = login_request.username;
+                // let protocol_version = get_i32(&mut buf)?;
+                // // skip(&mut buf, 1)?;
+                // let username = get_string(&mut buf)?;
+                // // skip(&mut buf, 1)?;
+                // let _password = get_string(&mut buf)?;
+                // let _map_seed = get_u64(&mut buf)?;
+                // let _dimension = get_i8(&mut buf)?;
 
-            let entity_id = get_id();
-            // let seed = 1111423422i64;
-            let seed: i64 = 9065250152070435348;
-            // let seed: i64 = -4264101711260417039;
-            let dimension = 0i8; // -1 hell
+                let entity_id = get_id();
+                // let seed = 1111423422i64;
+                let seed: i64 = 9065250152070435348;
+                // let seed: i64 = -4264101711260417039;
+                let dimension = 0i8; // -1 hell
 
-            let mut packet = vec![1];
-            packet.extend_from_slice(&entity_id.to_be_bytes());
+                let login_response = packet::LoginResponsePacket {
+                    entity_id,
+                    _unused1: String::new(),
+                    _unused2: String::new(),
+                    map_seed: seed,
+                    dimension,
+                };
+                login_response.send(stream).await?;
 
-            packet.extend_from_slice(&[0, 0, 0, 0]);
-            #[rustfmt::skip]
-            // packet.extend_from_slice(&[0, 0,0, 0, 0,0, 0]);
-            packet.extend_from_slice(&seed.to_be_bytes());
-            // packet.extend_from_slice(&[0 ]);
-            packet.extend_from_slice(&dimension.to_be_bytes());
+                // let mut packet = vec![1];
+                // packet.extend_from_slice(&entity_id.to_be_bytes());
 
-            stream.write_all(&packet).await.unwrap();
-            stream.flush().await.unwrap();
+                // packet.extend_from_slice(&[0, 0, 0, 0]);
+                // #[rustfmt::skip]
+                // // packet.extend_from_slice(&[0, 0,0, 0, 0,0, 0]);
+                // packet.extend_from_slice(&seed.to_be_bytes());
+                // // packet.extend_from_slice(&[0 ]);
+                // packet.extend_from_slice(&dimension.to_be_bytes());
 
-            println!("protocol_version {protocol_version}");
-            println!("username {username}");
-            {
-                let mut state = state.write().await;
-                state.username = username;
-                state.entity_id = entity_id;
-            }
-            logged_in.store(true, Ordering::Relaxed);
+                println!("protocol_version {protocol_version}");
+                println!("username {username}");
+                {
+                    let mut state = state.write().await;
+                    state.username = username;
+                    state.entity_id = entity_id;
+                }
+                logged_in.store(true, Ordering::Relaxed);
 
-            for chunk in chunks.iter() {
-                send_chunk(chunk, stream).await.unwrap();
-            }
-            println!("sent map");
+                for chunk in chunks.iter() {
+                    send_chunk(chunk, stream).await.unwrap();
+                }
+                println!("sent map");
 
-            // -56.277393,65.62,70.65869
-            let x = -56i32;
-            let y = 80i32;
-            let z = 70i32;
-            let mut spawn_position = vec![0x06];
-            spawn_position.extend_from_slice(&x.to_be_bytes());
-            spawn_position.extend_from_slice(&y.to_be_bytes());
-            spawn_position.extend_from_slice(&z.to_be_bytes());
+                packet::SpawnPositionPacket {
+                    x: -56i32,
+                    y: 80i32,
+                    z: 70i32,
+                }
+                .send(stream)
+                .await?;
 
-            stream.write_all(&spawn_position).await.unwrap();
-            stream.flush().await.unwrap();
+                println!("sent spawn");
 
-            println!("sent spawn");
-
-            for (id, count) in [(-1i32, 36i16), (-2, 4), (-3, 4)] {
-                let mut player_inventory = vec![0x05];
-                player_inventory.extend_from_slice(&id.to_be_bytes());
-                player_inventory.extend_from_slice(&count.to_be_bytes());
-                for _ in 0..count {
-                    player_inventory.extend_from_slice(&(-1i16).to_be_bytes());
+                for (id, count) in [(-1i32, 36i16), (-2, 4), (-3, 4)] {
+                    packet::PlayerInventoryPacket {
+                        inventory_type: id,
+                        count,
+                        payload: vec![(-1i16).to_be_bytes(); count as usize].concat(),
+                    }
+                    .send(stream)
+                    .await?;
                 }
 
-                stream.write_all(&player_inventory).await.unwrap();
+                println!("sent inv");
+
+                let x = 0.27f64;
+                let y = 74.62f64;
+                let z = 0.65f64;
+                let stance: f64 = y + 1.6;
+
+                let yaw = 0f32;
+                let pitch = 0f32;
+
+                let outer_state;
+                {
+                    let mut state = state.write().await;
+                    state.position_and_look.x = x;
+                    state.position_and_look.y = y;
+                    state.position_and_look.z = z;
+                    state.position_and_look.yaw = yaw;
+                    state.position_and_look.pitch = pitch;
+                    outer_state = (
+                        state.entity_id,
+                        state.position_and_look,
+                        Some(state.username.clone()),
+                    );
+                }
+                entity_tx
+                    .send((outer_state.0, outer_state.1, outer_state.2))
+                    .await
+                    .unwrap();
+
+                let on_ground = true;
+
+                let mut position_look = vec![0x0D];
+                position_look.extend_from_slice(&x.to_be_bytes());
+                // mind stance order
+                position_look.extend_from_slice(&stance.to_be_bytes());
+                position_look.extend_from_slice(&y.to_be_bytes());
+                position_look.extend_from_slice(&z.to_be_bytes());
+
+                position_look.extend_from_slice(&yaw.to_be_bytes());
+                position_look.extend_from_slice(&pitch.to_be_bytes());
+                position_look.extend_from_slice(&[on_ground as u8]);
+
+                stream.write_all(&position_look).await.unwrap();
                 stream.flush().await.unwrap();
+                println!("sent pos");
+
+                state.write().await.logged_in = true;
+            }
+            // Handshake
+            0x02 => {
+                // skip(&mut buf, 1)?;
+                let username = get_string(&mut buf)?;
+                let ch = ClientHandshake { username };
+                stream.write_all(&[2, 0, 1, b'-']).await.unwrap();
+                stream.flush().await.unwrap();
+                println!("ch: {ch:?}");
+            }
+            0x03 => {
+                let message = get_string(&mut buf)?;
+                println!("{message}")
+            }
+            0x0A => {
+                let _on_ground = get_u8(&mut buf)? != 0;
+                // println!("on_ground: {on_ground}");
             }
 
-            println!("sent inv");
+            0x0B => {
+                let x = get_f64(&mut buf)?;
+                let y = get_f64(&mut buf)?;
+                let _stance = get_f64(&mut buf)?;
+                let z = get_f64(&mut buf)?;
+                let _on_ground = get_u8(&mut buf)? != 0;
 
-            let x = 0.27f64;
-            let y = 74.62f64;
-            let z = 0.65f64;
-            let stance: f64 = y + 1.6;
+                let outer_state;
+                {
+                    let mut state = state.write().await;
 
-            let yaw = 0f32;
-            let pitch = 0f32;
-
-            let outer_state;
-            {
-                let mut state = state.write().await;
-                state.position_and_look.x = x;
-                state.position_and_look.y = y;
-                state.position_and_look.z = z;
-                state.position_and_look.yaw = yaw;
-                state.position_and_look.pitch = pitch;
-                outer_state = (state.entity_id, state.position_and_look);
+                    state.position_and_look.x = x;
+                    state.position_and_look.y = y;
+                    state.position_and_look.z = z;
+                    outer_state = (state.entity_id, state.position_and_look);
+                }
+                entity_tx
+                    .send((outer_state.0, outer_state.1, None))
+                    .await
+                    .unwrap();
+                // println!("{x} {y} {stance} {z} {on_ground}");
             }
-            entity_tx
-                .send((outer_state.0, outer_state.1))
-                .await
-                .unwrap();
 
-            let on_ground = true;
+            0x0C => {
+                let yaw = get_f32(&mut buf)?;
+                let pitch = get_f32(&mut buf)?;
+                let _on_ground = get_u8(&mut buf)? != 0;
 
             let mut position_look = vec![0x0D];
             position_look.extend_from_slice(&x.to_be_bytes());
@@ -485,6 +615,7 @@ async fn parse_packet(
             let z = get_f64(&mut buf)?;
             let on_ground = get_u8(&mut buf)? != 0;
 
+            outer_state = (state.entity_id, state.position_and_look);
             let outer_state;
             {
                 let mut state = state.write().await;
@@ -492,60 +623,61 @@ async fn parse_packet(
                 state.position_and_look.x = x;
                 state.position_and_look.y = y;
                 state.position_and_look.z = z;
-                outer_state = (state.entity_id, state.position_and_look);
-            }
-            entity_tx
-                .send((outer_state.0, outer_state.1))
-                .await
-                .unwrap();
-            // println!("{x} {y} {stance} {z} {on_ground}");
-        }
-
-        0x0C => {
-            let yaw = get_f32(&mut buf)?;
-            let pitch = get_f32(&mut buf)?;
-            let on_ground = get_u8(&mut buf)? != 0;
-
-            let outer_state;
-            {
-                let mut state = state.write().await;
                 state.position_and_look.yaw = yaw;
                 state.position_and_look.pitch = pitch;
                 outer_state = (state.entity_id, state.position_and_look);
+                
+                entity_tx
+                    .send((outer_state.0, outer_state.1, None))
+                    .await
+                    .unwrap();
+                // println!("{yaw} {pitch} {on_ground}");
             }
-            entity_tx
-                .send((outer_state.0, outer_state.1))
-                .await
-                .unwrap();
-            // println!("{yaw} {pitch} {on_ground}");
-        }
 
-        0x0D => {
-            let x = get_f64(&mut buf)?;
-            let y = get_f64(&mut buf)?;
-            let stance = get_f64(&mut buf)?;
-            let z = get_f64(&mut buf)?;
-            let yaw = get_f32(&mut buf)?;
-            let pitch = get_f32(&mut buf)?;
-            let on_ground = get_u8(&mut buf)? != 0;
-            let outer_state;
-            {
-                let mut state = state.write().await;
-                state.position_and_look.x = x;
-                state.position_and_look.y = y;
-                state.position_and_look.z = z;
-                state.position_and_look.yaw = yaw;
-                state.position_and_look.pitch = pitch;
-                outer_state = (state.entity_id, state.position_and_look);
+            0x0D => {
+                let x = get_f64(&mut buf)?;
+                let y = get_f64(&mut buf)?;
+                let _stance = get_f64(&mut buf)?;
+                let z = get_f64(&mut buf)?;
+                let yaw = get_f32(&mut buf)?;
+                let pitch = get_f32(&mut buf)?;
+                let _on_ground = get_u8(&mut buf)? != 0;
+                let outer_state;
+                {
+                    let mut state = state.write().await;
+                    state.position_and_look.x = x;
+                    state.position_and_look.y = y;
+                    state.position_and_look.z = z;
+                    state.position_and_look.yaw = yaw;
+                    state.position_and_look.pitch = pitch;
+                    outer_state = (state.entity_id, state.position_and_look);
+                }
+                entity_tx
+                    .send((outer_state.0, outer_state.1, None))
+                    .await
+                    .unwrap();
+
+                // println!("{x} {y} {stance} {z} {yaw} {pitch} {on_ground}");
             }
-            entity_tx
-                .send((outer_state.0, outer_state.1))
-                .await
-                .unwrap();
-
-            // println!("{x} {y} {stance} {z} {yaw} {pitch} {on_ground}");
+            0x12 => {
+                let pid = get_i32(&mut buf)?;
+                let arm_winging = get_u8(&mut buf)? > 0;
+                println!("{pid} {arm_winging}")
+            }
+            0xff => {
+                // player.should_disconnect = true;
+                let reason = get_string(&mut buf)?;
+                println!("disconnect: {reason}");
+                tx_disconnect
+                    .send(state.read().await.entity_id)
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                println!("packet_id: {packet_id}");
+                return Err(PacketError::NotEnoughBytes);
+            }
         }
-        _ => return Err(Error::Incomplete),
     }
     Ok(buf.position() as usize)
 }
@@ -566,23 +698,14 @@ pub struct PositionAndLook {
     pitch: f32,
 }
 
-async fn handle_client(
-    stream: TcpStream,
-    chunks: &'static [Chunk],
-    entity_tx: Sender<(i32, PositionAndLook)>,
-    mut entity_move_rx: tokio::sync::broadcast::Receiver<(
-        i32,
-        PositionAndLook,
-        Option<PositionAndLook>,
-    )>,
-) {
-
 async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) {
     let mut buf = BytesMut::with_capacity(SIZE);
 
     let Channels {
         tx_player_pos_and_look,
         mut rx_entity_movement,
+        tx_destroy_self_entity,
+        mut rx_destroy_entities,
     } = channels;
 
     let stream = Arc::new(RwLock::new(stream));
@@ -594,6 +717,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let chat_msg_vec_clone = chat_msg_vec.clone();
     let user = Arc::new(RwLock::new(String::from("")));
     let user_clone = user.clone();
+    let entity_destroy_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -612,11 +736,12 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
     let logged_in_inner = logged_in.clone();
     let state_pos_update = state.clone();
+
+    // spawn or update entities
     tokio::task::spawn(async move {
         let mut seen_before = HashSet::new();
         loop {
             // single core servers
-            tokio::time::sleep(std::time::Duration::from_secs_f64(0.001)).await;
             if !logged_in_inner.load(Ordering::Relaxed) {
                 continue;
             }
@@ -640,9 +765,10 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
                 let mut pos_update_stream = pos_update_stream.write().await;
 
                 match ty {
-                    entities::Type::Player => spawned_named_entity(&mut pos_update_stream, eid, "Stefan", &now).await
+                    entities::Type::Player(name) => {
+                        spawned_named_entity(&mut pos_update_stream, eid, &name, &now).await
+                    }
                 };
-
 
                 let mut entity_spawn = vec![0x1E];
                 entity_spawn.extend_from_slice(&eid.to_be_bytes());
@@ -688,6 +814,24 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
                     .await
                     .unwrap();
                 pos_update_stream.flush().await.unwrap();
+            }
+        }
+    });
+
+    // destroy entities
+    tokio::task::spawn(async move {
+        loop {
+            if let Ok(eid) = rx_destroy_entities.recv().await {
+                println!("des: {eid}");
+                let mut destroy_entity = vec![0x1D];
+                destroy_entity.extend_from_slice(&eid.to_be_bytes());
+
+                let mut destroy_entity_stream = entity_destroy_stream.write().await;
+                destroy_entity_stream
+                    .write_all(&destroy_entity)
+                    .await
+                    .unwrap();
+                destroy_entity_stream.flush().await.unwrap();
             }
         }
     });
@@ -765,6 +909,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             chunks,
             &state,
             &tx_player_pos_and_look,
+            &tx_destroy_self_entity,
             &logged_in,
             &mut *user.write().await,
             &mut *chat_msg_vec.write().await
@@ -778,7 +923,14 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             println!("break");
             break;
         }
+
+        // println!("{player:?}")
     }
+
+    tx_destroy_self_entity
+        .send(state.read().await.entity_id)
+        .await
+        .unwrap();
 }
 
 async fn send_chat_msg(chat_stream: Arc<RwLock<TcpStream>>, user: &String, msg: String) {

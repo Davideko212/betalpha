@@ -10,6 +10,7 @@ base-encode = "0.3.1"
 bytes = "1.5.0"
 hematite-nbt = "0.5.2"
 tokio = { version = "1", features = ["full"] }
+# tokio = { path = "../tokio/tokio", features = ["full"] }
 walkdir = "2.4.0"
 flate2 = "1"
 deflate = "1"
@@ -17,3 +18,7 @@ rayon = "1.8.0"
 libz-sys = "1.1.12"
 regex = "1.10.2"
 rand = "0.8.5"
+betalpha-derive = {path = "betalpha-derive"}
+
+[workspace]
+members = ["betalpha-derive"]
