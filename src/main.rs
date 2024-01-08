@@ -59,43 +59,6 @@ fn test_base_conv() {
 
 use crate::entities::spawned_named_entity;
 
-fn test_libz() {
-    // libz_sys::compress(dest, destLen, source, sourceLen)
-    // Original data
-    let _original_data = b"Hello, world!";
-    /*
-    // Initialize the z_stream structure
-    let mut stream = z_stream {
-        next_in: original_data.as_ptr() as *mut _,
-        avail_in: original_data.len() as u32,
-        ..Default::default()
-    };
-
-    // Initialize the deflate stream
-    let mut ret = unsafe { deflateInit_(&mut stream, libz_sys::Z_DEFAULT_COMPRESSION) };
-    assert_eq!(ret, Z_OK);
-
-    // Buffer to hold compressed data
-    let mut compressed_data = vec![0u8; original_data.len() * 2];
-
-    // Set the output buffer
-    stream.next_out = compressed_data.as_mut_ptr() as *mut _;
-    stream.avail_out = compressed_data.len() as u32;
-
-    // Perform the compression
-    ret = unsafe { deflate(&mut stream, libz_sys::Z_FINISH) };
-    assert_eq!(ret, Z_STREAM_END);
-
-    // Clean up the deflate stream
-    ret = unsafe { deflateEnd(&mut stream) };
-    assert_eq!(ret, Z_OK);
-
-    // Resize the compressed_data vector to the actual size
-    compressed_data.resize((stream.next_out as usize - compressed_data.as_ptr() as usize) / std::mem::size_of::<u8>(), 0);
-
-    println!("Compressed data: {:?}", compressed_data);*/
-}
-
 pub struct Chunk {
     chunk_x: i32,
     chunk_z: i32,
@@ -110,7 +73,7 @@ type PacketHandler = Box<
     dyn FnOnce(
         &mut Cursor<&[u8]>,
         &mut TcpStream,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>,
+    ) -> Pin<Box<dyn Future<Output=Result<(), Error>>>>,
 >;
 
 #[inline]
@@ -119,8 +82,8 @@ pub async fn incomplete(_buf: &mut Cursor<&[u8]>, _stream: &mut TcpStream) -> Re
 }
 
 fn force_boxed<T>(f: fn(&mut Cursor<&[u8]>, &mut TcpStream) -> T) -> PacketHandler
-where
-    T: Future<Output = Result<(), Error>> + 'static,
+    where
+        T: Future<Output=Result<(), Error>> + 'static,
 {
     Box::new(move |buf, stream| Box::pin(f(buf, stream)))
 }
@@ -339,8 +302,8 @@ pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> Result<(), Pac
         z: chunk.chunk_z,
         mode: true,
     }
-    .send(stream)
-    .await?;
+        .send(stream)
+        .await?;
 
     // let mut map_chunk = vec![0x33];
     let x = chunk.chunk_x * 16;
@@ -372,12 +335,13 @@ pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> Result<(), Pac
             compressed_size: len as i32,
             compressed_data: compressed_bytes[..len as usize].to_vec(),
         }
-        .send(stream)
-        .await?;
+            .send(stream)
+            .await?;
     }
 
     Ok(())
 }
+
 fn get_id() -> i32 {
     static COUNTER: AtomicI32 = AtomicI32::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -393,7 +357,7 @@ async fn parse_packet(
     tx_disconnect: &Sender<i32>,
     logged_in: &AtomicBool,
     user: &mut String,
-    chat: &mut Vec<String>
+    chat: &mut Vec<String>,
 ) -> Result<usize, PacketError> {
     let mut buf = Cursor::new(&buf[..]);
 
@@ -462,8 +426,8 @@ async fn parse_packet(
                     y: 80i32,
                     z: 70i32,
                 }
-                .send(stream)
-                .await?;
+                    .send(stream)
+                    .await?;
 
                 println!("sent spawn");
 
@@ -473,8 +437,8 @@ async fn parse_packet(
                         count,
                         payload: vec![(-1i16).to_be_bytes(); count as usize].concat(),
                     }
-                    .send(stream)
-                    .await?;
+                        .send(stream)
+                        .await?;
                 }
 
                 println!("sent inv");
@@ -534,9 +498,11 @@ async fn parse_packet(
                 stream.flush().await.unwrap();
                 println!("ch: {ch:?}");
             }
-            0x03 => {
+            3 => {
                 let message = get_string(&mut buf)?;
-                println!("{message}")
+                chat.push(message);
+                stream.flush().await.unwrap();
+                //println!("chat_message: {message:?}")
             }
             0x0A => {
                 let _on_ground = get_u8(&mut buf)? != 0;
@@ -546,9 +512,9 @@ async fn parse_packet(
             0x0B => {
                 let x = get_f64(&mut buf)?;
                 let y = get_f64(&mut buf)?;
-                let _stance = get_f64(&mut buf)?;
+                let stance = get_f64(&mut buf)?;
                 let z = get_f64(&mut buf)?;
-                let _on_ground = get_u8(&mut buf)? != 0;
+                let on_ground = get_u8(&mut buf)? != 0;
 
                 let outer_state;
                 {
@@ -557,13 +523,16 @@ async fn parse_packet(
                     state.position_and_look.x = x;
                     state.position_and_look.y = y;
                     state.position_and_look.z = z;
+                    //state.position_and_look.yaw = yaw;
+                    //state.position_and_look.pitch = pitch;
                     outer_state = (state.entity_id, state.position_and_look);
+
+                    entity_tx
+                        .send((outer_state.0, outer_state.1, None))
+                        .await
+                        .unwrap();
+                    // println!("{yaw} {pitch} {on_ground}");
                 }
-                entity_tx
-                    .send((outer_state.0, outer_state.1, None))
-                    .await
-                    .unwrap();
-                // println!("{x} {y} {stance} {z} {on_ground}");
             }
 
             0x0C => {
@@ -571,62 +540,13 @@ async fn parse_packet(
                 let pitch = get_f32(&mut buf)?;
                 let _on_ground = get_u8(&mut buf)? != 0;
 
-            let mut position_look = vec![0x0D];
-            position_look.extend_from_slice(&x.to_be_bytes());
-            // mind stance order
-            position_look.extend_from_slice(&stance.to_be_bytes());
-            position_look.extend_from_slice(&y.to_be_bytes());
-            position_look.extend_from_slice(&z.to_be_bytes());
-
-            position_look.extend_from_slice(&yaw.to_be_bytes());
-            position_look.extend_from_slice(&pitch.to_be_bytes());
-            position_look.extend_from_slice(&[on_ground as u8]);
-
-            stream.write_all(&position_look).await.unwrap();
-            stream.flush().await.unwrap();
-            println!("sent pos");
-
-            state.write().await.logged_in = true;
-        }
-        2 => {
-            // skip(&mut buf, 1)?;
-            let username = get_string(&mut buf)?;
-            *user = username.clone();
-            let ch = ClientHandshake { username };
-            stream.write_all(&[2, 0, 1, b'-']).await.unwrap();
-            stream.flush().await.unwrap();
-            println!("ch: {ch:?}");
-        }
-        3 => {
-            let message = get_string(&mut buf)?;
-            chat.push(message);
-            stream.flush().await.unwrap();
-            //println!("chat_message: {message:?}")
-        }
-        0x0A => {
-            let on_ground = get_u8(&mut buf)? != 0;
-            // println!("on_ground: {on_ground}");
-        }
-
-        0x0B => {
-            let x = get_f64(&mut buf)?;
-            let y = get_f64(&mut buf)?;
-            let stance = get_f64(&mut buf)?;
-            let z = get_f64(&mut buf)?;
-            let on_ground = get_u8(&mut buf)? != 0;
-
-            outer_state = (state.entity_id, state.position_and_look);
-            let outer_state;
-            {
-                let mut state = state.write().await;
-
-                state.position_and_look.x = x;
-                state.position_and_look.y = y;
-                state.position_and_look.z = z;
-                state.position_and_look.yaw = yaw;
-                state.position_and_look.pitch = pitch;
-                outer_state = (state.entity_id, state.position_and_look);
-                
+                let outer_state;
+                {
+                    let mut state = state.write().await;
+                    state.position_and_look.yaw = yaw;
+                    state.position_and_look.pitch = pitch;
+                    outer_state = (state.entity_id, state.position_and_look);
+                }
                 entity_tx
                     .send((outer_state.0, outer_state.1, None))
                     .await
@@ -912,9 +832,9 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             &tx_destroy_self_entity,
             &logged_in,
             &mut *user.write().await,
-            &mut *chat_msg_vec.write().await
+            &mut *chat_msg_vec.write().await,
         )
-        .await
+            .await
         {
             buf.advance(n);
         }
