@@ -8,6 +8,7 @@ use std::{
         Arc,
     },
 };
+use std::sync::atomic::AtomicI64;
 
 use bytes::{Buf, BytesMut};
 
@@ -198,6 +199,15 @@ async fn main() {
 
     let pos_and_look_update_tx_inner = pos_and_look_update_tx.clone();
     let tx_destroy_entities_inner = tx_destroy_entities.clone();
+
+    tokio::task::spawn(async move {
+        loop {
+            incr_time();
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
     tokio::spawn(async move {
         loop {
             // receive position updates, log in (username)
@@ -275,6 +285,7 @@ pub struct Channels {
     rx_destroy_entities: broadcast::Receiver<i32>,
 }
 
+static TIME: AtomicI64 = AtomicI64::new(0);
 const SIZE: usize = 1024 * 8;
 
 #[derive(Debug)]
@@ -356,7 +367,6 @@ async fn parse_packet(
     entity_tx: &Sender<(i32, PositionAndLook, Option<String>)>,
     tx_disconnect: &Sender<i32>,
     logged_in: &AtomicBool,
-    user: &mut String,
     chat: &mut Vec<String>,
 ) -> Result<usize, PacketError> {
     let mut buf = Cursor::new(&buf[..]);
@@ -633,10 +643,10 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let pos_update_stream = stream.clone();
     let chat_stream = stream.clone();
     let mob_stream = stream.clone();
+    let tick_stream = stream.clone();
     let chat_msg_vec = Arc::new(RwLock::new(vec![]));
     let chat_msg_vec_clone = chat_msg_vec.clone();
     let user = Arc::new(RwLock::new(String::from("")));
-    let user_clone = user.clone();
     let entity_destroy_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
@@ -775,9 +785,9 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     tokio::task::spawn(async move {
         loop {
             let read_vec = chat_msg_vec_clone.read().await.to_vec();
-            let username = user_clone.read().await.to_string();
             for msg in read_vec {
-                send_chat_msg(chat_stream.clone(), &username, msg).await;
+                let username =  &state_pos_update.read().await.username;
+                send_chat_msg(chat_stream.clone(), username, msg).await;
             }
             chat_msg_vec_clone.write().await.clear();
 
@@ -822,6 +832,22 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         }
     });
 
+    // ticks (very scuffed)
+    tokio::task::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        loop {
+            let mut tick_vec = vec![0x04];
+            let time = get_time();
+            tick_vec.extend_from_slice(&time.to_be_bytes());
+
+            tick_stream.write().await.write_all(&tick_vec).await.unwrap();
+            tick_stream.write().await.flush().await.unwrap();
+            println!("time: {}", time);
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
     loop {
         if let Ok(n) = parse_packet(
             &mut *stream.write().await,
@@ -831,7 +857,6 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             &tx_player_pos_and_look,
             &tx_destroy_self_entity,
             &logged_in,
-            &mut *user.write().await,
             &mut *chat_msg_vec.write().await,
         )
             .await
@@ -890,4 +915,41 @@ async fn mob_destroy(mob_stream: Arc<RwLock<TcpStream>>) {
     destroy_packet.extend_from_slice(&420_i32.to_be_bytes()); // EID (420)
     mob_stream.write().await.write_all(&destroy_packet).await.unwrap();
     mob_stream.write().await.flush().await.unwrap();
+}
+
+fn incr_time() {
+    TIME.fetch_add(1, Ordering::SeqCst);
+}
+
+fn get_time() -> i64 {
+    TIME.load(Ordering::SeqCst)
+}
+
+fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
+    chunks.iter().find(|c| (c.chunk_x == (x >> 4))
+        && (c.chunk_z == (z >> 4))).unwrap()
+}
+
+fn get_block_id(chunks: &[Chunk], x: i32, y: i8, z: i32) -> u8 {
+    let chunk = get_chunk_from_block(chunks, x, z);
+    println!("{} {}", -1/16, (-1 as f32/16f32).floor());
+    println!("chunk: {} {}", chunk.chunk_x, chunk.chunk_z);
+    let mut index = (y as i32 + ( (z%16) * 128 + ( (x%16) * 128 * 16 ) )) as usize;
+    if index > (usize::MAX / 2) {
+        index = usize::MAX - index;
+    }
+    println!("{index}");
+    *chunk.blocks.get(index % usize::MAX).unwrap()
+}
+
+fn destroy_block(chunks: &[Chunk], x: i32, y: i8, z: i32) {
+    let chunk = get_chunk_from_block(chunks, x, z);
+    println!("{} {}", -1/16, (-1 as f32/16f32).floor());
+    println!("chunk: {} {}", chunk.chunk_x, chunk.chunk_z);
+    let mut index = (y as i32 + ( (z%16) * 128 + ( (x%16) * 128 * 16 ) )) as usize;
+    if index > (usize::MAX / 2) {
+        index = usize::MAX - index;
+    }
+    println!("{index}");
+    //chunk.blocks[index % usize::MAX] = 0_u8; no worky
 }
