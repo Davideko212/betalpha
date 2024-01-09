@@ -8,6 +8,7 @@ use std::{
         Arc,
     },
 };
+use std::os::raw::c_ulong;
 use std::sync::atomic::AtomicI64;
 
 use bytes::{Buf, BytesMut};
@@ -68,6 +69,15 @@ pub struct Chunk {
     sky_light: Vec<u8>,
     block_light: Vec<u8>,
     height_map: Vec<u8>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Block {
+    x: i32,
+    y: i8,
+    z: i32,
+    block_type: i8,
+    metadata: i8,
 }
 
 type PacketHandler = Box<
@@ -192,6 +202,8 @@ async fn main() {
     let (pos_and_look_update_tx, _pos_and_look_update_rx) = broadcast::channel(256);
     let (tx_destroy_self_entity, mut rx_entity_destroy) = mpsc::channel::<i32>(100);
     let (tx_destroy_entities, _) = broadcast::channel(256);
+    let (tx_block_updates, mut rx_block_updates) = mpsc::channel::<Block>(100);
+    let (tx_block_server, rx_block_server) = broadcast::channel(256);
 
     // several maps - avoid cloning of username (remove username from state -> username lookup ?)
     let mut entity_positions = std::collections::HashMap::new();
@@ -199,6 +211,7 @@ async fn main() {
 
     let pos_and_look_update_tx_inner = pos_and_look_update_tx.clone();
     let tx_destroy_entities_inner = tx_destroy_entities.clone();
+    let tx_block_server_inner = tx_block_server.clone();
 
     tokio::task::spawn(async move {
         loop {
@@ -247,6 +260,11 @@ async fn main() {
 
                 tx_destroy_entities_inner.send(eid).unwrap();
             }
+
+            if let Ok(block) = rx_block_updates.try_recv() {
+                tx_block_server_inner.send(block).unwrap();
+            }
+
             tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
         }
     });
@@ -257,6 +275,8 @@ async fn main() {
             rx_entity_movement: pos_and_look_update_tx.clone().subscribe(),
             tx_destroy_self_entity: tx_destroy_self_entity.clone(),
             rx_destroy_entities: tx_destroy_entities.clone().subscribe(),
+            tx_block_updates: tx_block_updates.clone(),
+            rx_block_server: tx_block_server.clone().subscribe(),
         };
 
         let stream = listener.accept().await.unwrap();
@@ -283,6 +303,8 @@ pub struct Channels {
     )>,
     tx_destroy_self_entity: mpsc::Sender<i32>,
     rx_destroy_entities: broadcast::Receiver<i32>,
+    tx_block_updates: mpsc::Sender<Block>,
+    rx_block_server: broadcast::Receiver<Block>,
 }
 
 static TIME: AtomicI64 = AtomicI64::new(0);
@@ -327,13 +349,13 @@ pub async fn send_chunk(chunk: &Chunk, stream: &mut TcpStream) -> Result<(), Pac
     to_compress.extend_from_slice(&chunk.sky_light);
 
     unsafe {
-        let mut len = libz_sys::compressBound(to_compress.len() as u32);
+        let mut len = libz_sys::compressBound(to_compress.len() as c_ulong);
         let mut compressed_bytes = vec![0u8; len as usize];
         libz_sys::compress(
             compressed_bytes.as_mut_ptr(),
             &mut len,
             to_compress.as_ptr(),
-            to_compress.len() as u32,
+            to_compress.len() as c_ulong,
         );
 
         packet::MapChunkPacket {
@@ -366,6 +388,7 @@ async fn parse_packet(
     state: &RwLock<State>,
     entity_tx: &Sender<(i32, PositionAndLook, Option<String>)>,
     tx_disconnect: &Sender<i32>,
+    tx_blocks: &Sender<Block>,
     logged_in: &AtomicBool,
     chat: &mut Vec<String>,
 ) -> Result<usize, PacketError> {
@@ -589,10 +612,47 @@ async fn parse_packet(
 
                 // println!("{x} {y} {stance} {z} {yaw} {pitch} {on_ground}");
             }
+            0x0E => {
+                let status = get_i8(&mut buf)?;
+                let x = get_i32(&mut buf)?;
+                let y = get_i8(&mut buf)?;
+                let z = get_i32(&mut buf)?;
+                let face = get_i8(&mut buf)?;
+                //println!("digging: {status} {x} {y} {z} {face}");
+                //println!("{}", get_block_id(chunks, x, y, z));
+                if status == 3 {
+                    //destroy_block(chunks, x, y, z);
+                    let block = Block {
+                        x,
+                        y,
+                        z,
+                        block_type: 0x00,
+                        metadata: 0x00,
+                    };
+                    tx_blocks.send(block).await.unwrap();
+                    println!("destroyed!");
+                }
+            }
+            0x0F => {
+                let id = get_u16(&mut buf)?;
+                let x = get_i32(&mut buf)?;
+                let y = get_i8(&mut buf)?;
+                let z = get_i32(&mut buf)?;
+                let direction = get_i8(&mut buf)?; // TODO: actually use the direction
+
+                let block = Block {
+                    x,
+                    y,
+                    z,
+                    block_type: id as i8,
+                    metadata: 0x00,
+                };
+                tx_blocks.send(block).await.unwrap();
+            }
             0x12 => {
                 let pid = get_i32(&mut buf)?;
-                let arm_winging = get_u8(&mut buf)? > 0;
-                println!("{pid} {arm_winging}")
+                let arm_swinging = get_u8(&mut buf)? > 0;
+                println!("{pid} {arm_swinging}")
             }
             0xff => {
                 // player.should_disconnect = true;
@@ -636,6 +696,8 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         mut rx_entity_movement,
         tx_destroy_self_entity,
         mut rx_destroy_entities,
+        tx_block_updates,
+        mut rx_block_server,
     } = channels;
 
     let stream = Arc::new(RwLock::new(stream));
@@ -648,6 +710,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let chat_msg_vec_clone = chat_msg_vec.clone();
     let user = Arc::new(RwLock::new(String::from("")));
     let entity_destroy_stream = stream.clone();
+    let block_change_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -684,7 +747,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             }
 
             // TODO: add eid is in reach check, unload/destroy entity
-            // FIXME: could potentially receive a lot of data / entity information that is intantly discarded
+            // FIXME: could potentially receive a lot of data / entity information that is instantly discarded
 
             // println!(
             //     "i am: {}, moved: {eid} {now:?}, prev: {prev:?}",
@@ -786,8 +849,8 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         loop {
             let read_vec = chat_msg_vec_clone.read().await.to_vec();
             for msg in read_vec {
-                let username =  &state_pos_update.read().await.username;
-                send_chat_msg(chat_stream.clone(), username, msg).await;
+                //let username =  &state_pos_update.read().await.username;
+                send_chat_msg(chat_stream.clone(), &"".to_string(), msg).await;
             }
             chat_msg_vec_clone.write().await.clear();
 
@@ -842,9 +905,30 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
             tick_stream.write().await.write_all(&tick_vec).await.unwrap();
             tick_stream.write().await.flush().await.unwrap();
-            println!("time: {}", time);
+            //println!("time: {}", time);
 
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    // block updates
+    tokio::task::spawn(async move {
+        loop {
+            if let Ok(block) = rx_block_server.recv().await {
+                let mut block_change = vec![0x35];
+                block_change.extend_from_slice(&block.x.to_be_bytes());
+                block_change.extend_from_slice(&block.y.to_be_bytes());
+                block_change.extend_from_slice(&block.z.to_be_bytes());
+                block_change.extend_from_slice(&block.block_type.to_be_bytes());
+                block_change.extend_from_slice(&block.metadata.to_be_bytes());
+
+                let mut change_block_stream = block_change_stream.write().await;
+                change_block_stream
+                    .write_all(&block_change)
+                    .await
+                    .unwrap();
+                change_block_stream.flush().await.unwrap();
+            }
         }
     });
 
@@ -856,6 +940,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             &state,
             &tx_player_pos_and_look,
             &tx_destroy_self_entity,
+            &tx_block_updates,
             &logged_in,
             &mut *chat_msg_vec.write().await,
         )
@@ -930,26 +1015,46 @@ fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
         && (c.chunk_z == (z >> 4))).unwrap()
 }
 
-fn get_block_id(chunks: &[Chunk], x: i32, y: i8, z: i32) -> u8 {
+fn get_block_id(chunks: &[Chunk], x: i32, y: i8, z: i32) -> i8 {
     let chunk = get_chunk_from_block(chunks, x, z);
-    println!("{} {}", -1/16, (-1 as f32/16f32).floor());
     println!("chunk: {} {}", chunk.chunk_x, chunk.chunk_z);
-    let mut index = (y as i32 + ( (z%16) * 128 + ( (x%16) * 128 * 16 ) )) as usize;
-    if index > (usize::MAX / 2) {
-        index = usize::MAX - index;
-    }
-    println!("{index}");
-    *chunk.blocks.get(index % usize::MAX).unwrap()
+    let chunk_x: i32 = {
+        if x >= 0 {
+            x % 16
+        } else {
+            (16 + (x % 16)) % 16
+        }
+    };
+    let chunk_z: i32 = {
+        if z >= 0 {
+            z % 16
+        } else {
+            (16 + (z % 16)) % 16
+        }
+    };
+    let mut index = (y as i32 + ( chunk_z * 128 + ( chunk_x * 128 * 16 ) )) as usize;
+    //println!("{index} / {}", chunk.blocks.len());
+    *chunk.blocks.get(index).unwrap() as i8
 }
 
 fn destroy_block(chunks: &[Chunk], x: i32, y: i8, z: i32) {
     let chunk = get_chunk_from_block(chunks, x, z);
-    println!("{} {}", -1/16, (-1 as f32/16f32).floor());
-    println!("chunk: {} {}", chunk.chunk_x, chunk.chunk_z);
-    let mut index = (y as i32 + ( (z%16) * 128 + ( (x%16) * 128 * 16 ) )) as usize;
-    if index > (usize::MAX / 2) {
-        index = usize::MAX - index;
-    }
-    println!("{index}");
-    //chunk.blocks[index % usize::MAX] = 0_u8; no worky
+    //println!("chunk: {} {}", chunk.chunk_x, chunk.chunk_z);
+    let chunk_x: i32 = {
+        if x >= 0 {
+            x % 16
+        } else {
+            16 + (x % 16)
+        }
+    };
+    let chunk_z: i32 = {
+        if z >= 0 {
+            z % 16
+        } else {
+            16 + (z % 16)
+        }
+    };
+    let mut index = (y as i32 + ( chunk_z * 128 + ( chunk_x * 128 * 16 ) )) as usize;
+    //println!("{index}");
+    //chunk.blocks[index % usize::MAX] = 0_u8;
 }

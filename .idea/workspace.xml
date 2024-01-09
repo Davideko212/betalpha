@@ -61,9 +61,14 @@
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "org.rust.cargo.project.model.PROJECT_DISCOVERY": "true",
+    "settings.editor.selected.configurable": "language.rust.cargo.check",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RsExternalLinterProjectSettings">
+    <option name="runOnTheFly" value="true" />
+    <option name="tool" value="Clippy" />
+  </component>
   <component name="RustProjectSettings">
     <option name="toolchainHomeDirectory" value="$USER_HOME$/.cargo/bin" />
   </component>
@@ -76,7 +81,9 @@
       <option name="presentableId" value="Default" />
       <updated>1704745397893</updated>
       <workItem from="1704745400054" duration="308000" />
-      <workItem from="1704745851339" duration="2869000" />
+      <workItem from="1704745851339" duration="3846000" />
+      <workItem from="1704750253923" duration="4496000" />
+      <workItem from="1704834237213" duration="4474000" />
     </task>
     <servers />
   </component>
