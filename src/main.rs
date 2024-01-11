@@ -87,6 +87,22 @@ pub struct Item {
     life: i16,
 }
 
+pub struct Inventory {
+    main: [Item; 36],
+    equipped: [Item; 4],
+    crafting: [Item; 4],
+}
+
+impl Default for Item {
+    fn default() -> Item { // empty item slot
+        Item {
+            item_type: -1,
+            count: 0,
+            life: 0,
+        }
+    }
+}
+
 type PacketHandler = Box<
     dyn FnOnce(
         &mut Cursor<&[u8]>,
@@ -222,6 +238,7 @@ async fn main() {
     let tx_destroy_entities_inner = tx_destroy_entities.clone();
     let tx_block_server_inner = tx_block_server.clone();
     let tx_item_server_inner = tx_item_server.clone();
+    let tx_destroy_items_inner = tx_destroy_entities.clone();
 
     tokio::task::spawn(async move {
         loop {
@@ -265,24 +282,11 @@ async fn main() {
                     .unwrap();
             }
 
-            if let Ok(eid) = rx_entity_destroy.try_recv() {
-                entity_positions.remove(&eid);
-                entity_username.remove(&eid);
-
-                tx_destroy_entities_inner.send(eid).unwrap();
-            }
-
-            tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
-        }
-    });
-
-    // item entities
-    tokio::spawn(async move {
-        loop {
+            // ITEMS
             // receive position updates
             if let Ok((eid, item, pos_and_look)) = rx_item_updates.try_recv() {
 
-                /*tx_item_server
+                /*tx_item_server_inner
                     .send((
                         eid,
                         entities::Type::Player(entity_username[&eid].clone()),
@@ -295,19 +299,20 @@ async fn main() {
                         eid,
                         item,
                         pos_and_look
-                        ))
+                    ))
                     .unwrap();
             }
 
-            /*if let Ok(eid) = rx_entity_destroy.try_recv() {
+            if let Ok(block) = rx_block_updates.try_recv() {
+                tx_block_server_inner.send(block).unwrap();
+            }
+
+            if let Ok(eid) = rx_entity_destroy.try_recv() {
                 entity_positions.remove(&eid);
                 entity_username.remove(&eid);
 
                 tx_destroy_entities_inner.send(eid).unwrap();
-            }*/
-
-            if let Ok(block) = rx_block_updates.try_recv() {
-                tx_block_server_inner.send(block).unwrap();
+                tx_destroy_items_inner.send(eid).unwrap();
             }
 
             tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
@@ -588,6 +593,27 @@ async fn parse_packet(
                 stream.flush().await.unwrap();
                 //println!("chat_message: {message:?}")
             }
+            0x05 => {
+                let inv_type = get_i32(&mut buf)?; // TODO: USE THIS!
+                let count = get_u16(&mut buf)? as i16;
+
+                for slot in 0..count {
+                    let item_id = get_u16(&mut buf)? as i16;
+                    if item_id == -1 {
+                        state.write().await.inventory.main[slot as usize] = Item::default();
+                    } else {
+                        let count = get_i8(&mut buf)?;
+                        let uses = get_u16(&mut buf)? as i16;
+                        state.write().await.inventory.main[slot as usize] = Item {
+                            item_type: item_id,
+                            count,
+                            life: uses,
+                        }
+                    }
+                }
+
+                stream.flush().await.unwrap();
+            }
             0x0A => {
                 let _on_ground = get_u8(&mut buf)? != 0;
                 // println!("on_ground: {on_ground}");
@@ -746,6 +772,7 @@ pub struct State {
     username: String,
     logged_in: bool,
     position_and_look: PositionAndLook,
+    inventory: Inventory,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -777,12 +804,15 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let chat_stream = stream.clone();
     let mob_stream = stream.clone();
     let tick_stream = stream.clone();
-    let chat_msg_vec = Arc::new(RwLock::new(vec![]));
+    let chat_msg_vec = Arc::new(RwLock::new(Vec::new()));
     let chat_msg_vec_clone = chat_msg_vec.clone();
     let user = Arc::new(RwLock::new(String::from("")));
     let entity_destroy_stream = stream.clone();
     let block_change_stream = stream.clone();
     let item_pos_update_stream = stream.clone();
+    let item_pickup_stream = stream.clone();
+    let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item)>::new()));
+    let dropped_items_clone = dropped_items.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -795,6 +825,11 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             yaw: 0.,
             pitch: 0.,
         },
+        inventory: Inventory {
+            main: [Item::default(); 36],
+            equipped: [Item::default(); 4],
+            crafting: [Item::default(); 4],
+        }
     }));
 
     let logged_in = Arc::new(AtomicBool::new(false));
@@ -1023,6 +1058,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
 
                 spawn_pickup_entity(&mut pos_update_stream, eid, item.item_type, item.count, &pos).await;
+                dropped_items.write().await.push((eid, item));
 
                 let mut entity_spawn = vec![0x1E];
                 entity_spawn.extend_from_slice(&eid.to_be_bytes());
@@ -1032,6 +1068,21 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             //}
 
             //seen_before.insert(eid);
+        }
+    });
+
+    // item pickup
+    tokio::task::spawn(async move {
+        loop {
+            let mut pickup_stream = item_pickup_stream.write().await;
+
+            for item in dropped_items_clone.write().await.to_vec() {
+
+            }
+
+            pickup_stream.flush().await.unwrap();
+
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     });
 
