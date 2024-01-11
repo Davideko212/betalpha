@@ -59,7 +59,7 @@ fn test_base_conv() {
     println!("{}", (12 << 4));
 }
 
-use crate::entities::spawned_named_entity;
+use crate::entities::{spawn_pickup_entity, spawned_named_entity};
 
 pub struct Chunk {
     chunk_x: i32,
@@ -78,6 +78,13 @@ pub struct Block {
     z: i32,
     block_type: i8,
     metadata: i8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Item {
+    item_type: i16,
+    count: i8,
+    life: i16,
 }
 
 type PacketHandler = Box<
@@ -203,7 +210,9 @@ async fn main() {
     let (tx_destroy_self_entity, mut rx_entity_destroy) = mpsc::channel::<i32>(100);
     let (tx_destroy_entities, _) = broadcast::channel(256);
     let (tx_block_updates, mut rx_block_updates) = mpsc::channel::<Block>(100);
-    let (tx_block_server, rx_block_server) = broadcast::channel(256);
+    let (tx_block_server, _) = broadcast::channel::<Block>(256);
+    let (tx_item_updates, mut rx_item_updates) = mpsc::channel::<(i32, Item, PositionAndLook)>(100);
+    let (tx_item_server, _) = broadcast::channel::<(i32, Item, PositionAndLook)>(256);
 
     // several maps - avoid cloning of username (remove username from state -> username lookup ?)
     let mut entity_positions = std::collections::HashMap::new();
@@ -212,6 +221,7 @@ async fn main() {
     let pos_and_look_update_tx_inner = pos_and_look_update_tx.clone();
     let tx_destroy_entities_inner = tx_destroy_entities.clone();
     let tx_block_server_inner = tx_block_server.clone();
+    let tx_item_server_inner = tx_item_server.clone();
 
     tokio::task::spawn(async move {
         loop {
@@ -221,6 +231,7 @@ async fn main() {
         }
     });
 
+    // player entities
     tokio::spawn(async move {
         loop {
             // receive position updates, log in (username)
@@ -261,6 +272,40 @@ async fn main() {
                 tx_destroy_entities_inner.send(eid).unwrap();
             }
 
+            tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
+        }
+    });
+
+    // item entities
+    tokio::spawn(async move {
+        loop {
+            // receive position updates
+            if let Ok((eid, item, pos_and_look)) = rx_item_updates.try_recv() {
+
+                /*tx_item_server
+                    .send((
+                        eid,
+                        entities::Type::Player(entity_username[&eid].clone()),
+                        pos_and_look,
+                        prev_pos_and_look,
+                    ))
+                    .unwrap();*/
+                tx_item_server_inner
+                    .send((
+                        eid,
+                        item,
+                        pos_and_look
+                        ))
+                    .unwrap();
+            }
+
+            /*if let Ok(eid) = rx_entity_destroy.try_recv() {
+                entity_positions.remove(&eid);
+                entity_username.remove(&eid);
+
+                tx_destroy_entities_inner.send(eid).unwrap();
+            }*/
+
             if let Ok(block) = rx_block_updates.try_recv() {
                 tx_block_server_inner.send(block).unwrap();
             }
@@ -277,6 +322,8 @@ async fn main() {
             rx_destroy_entities: tx_destroy_entities.clone().subscribe(),
             tx_block_updates: tx_block_updates.clone(),
             rx_block_server: tx_block_server.clone().subscribe(),
+            tx_item_updates: tx_item_updates.clone(),
+            rx_item_server: tx_item_server.clone().subscribe(),
         };
 
         let stream = listener.accept().await.unwrap();
@@ -284,7 +331,7 @@ async fn main() {
             let rx_entity_movement = &mut channels.rx_entity_movement;
             let rx_destroy_entities = &mut channels.rx_destroy_entities;
 
-            // used to clear the prevoius buffered moves ..
+            // used to clear the previous buffered moves ..
             while rx_entity_movement.try_recv().err() != Some(TryRecvError::Empty) {}
             while rx_destroy_entities.try_recv().err() != Some(TryRecvError::Empty) {}
 
@@ -305,10 +352,13 @@ pub struct Channels {
     rx_destroy_entities: broadcast::Receiver<i32>,
     tx_block_updates: mpsc::Sender<Block>,
     rx_block_server: broadcast::Receiver<Block>,
+    tx_item_updates: mpsc::Sender<(i32, Item, PositionAndLook)>,
+    rx_item_server: broadcast::Receiver<(i32, Item, PositionAndLook)>,
 }
 
 static TIME: AtomicI64 = AtomicI64::new(0);
 const SIZE: usize = 1024 * 8;
+static EIDCounter: AtomicI32 = AtomicI32::new(300000);
 
 #[derive(Debug)]
 pub struct ClientHandshake {
@@ -386,9 +436,10 @@ async fn parse_packet(
     buf: &BytesMut,
     chunks: &[Chunk],
     state: &RwLock<State>,
-    entity_tx: &Sender<(i32, PositionAndLook, Option<String>)>,
+    tx_player_pos_and_look: &Sender<(i32, PositionAndLook, Option<String>)>,
     tx_disconnect: &Sender<i32>,
     tx_blocks: &Sender<Block>,
+    tx_items: &Sender<(i32, Item, PositionAndLook)>,
     logged_in: &AtomicBool,
     chat: &mut Vec<String>,
 ) -> Result<usize, PacketError> {
@@ -498,7 +549,7 @@ async fn parse_packet(
                         Some(state.username.clone()),
                     );
                 }
-                entity_tx
+                tx_player_pos_and_look
                     .send((outer_state.0, outer_state.1, outer_state.2))
                     .await
                     .unwrap();
@@ -560,7 +611,7 @@ async fn parse_packet(
                     //state.position_and_look.pitch = pitch;
                     outer_state = (state.entity_id, state.position_and_look);
 
-                    entity_tx
+                    tx_player_pos_and_look
                         .send((outer_state.0, outer_state.1, None))
                         .await
                         .unwrap();
@@ -580,7 +631,7 @@ async fn parse_packet(
                     state.position_and_look.pitch = pitch;
                     outer_state = (state.entity_id, state.position_and_look);
                 }
-                entity_tx
+                tx_player_pos_and_look
                     .send((outer_state.0, outer_state.1, None))
                     .await
                     .unwrap();
@@ -605,7 +656,7 @@ async fn parse_packet(
                     state.position_and_look.pitch = pitch;
                     outer_state = (state.entity_id, state.position_and_look);
                 }
-                entity_tx
+                tx_player_pos_and_look
                     .send((outer_state.0, outer_state.1, None))
                     .await
                     .unwrap();
@@ -629,7 +680,25 @@ async fn parse_packet(
                         block_type: 0x00,
                         metadata: 0x00,
                     };
+                    let pos = PositionAndLook {
+                        x: x as f64,
+                        y: y as f64,
+                        z: z as f64,
+                        yaw: 0.0,
+                        pitch: 0.0,
+                    };
+                    let item = Item {
+                        item_type: get_block_id(chunks, x, y, z) as i16,
+                        count: 1,
+                        life: 0,
+                    };
+
                     tx_blocks.send(block).await.unwrap();
+                    tx_items
+                        .send((get_eidcounter(), item, pos))
+                        .await
+                        .unwrap();
+                    incr_eidcounter();
                     println!("destroyed!");
                 }
             }
@@ -698,6 +767,8 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         mut rx_destroy_entities,
         tx_block_updates,
         mut rx_block_server,
+        tx_item_updates,
+        mut rx_item_server,
     } = channels;
 
     let stream = Arc::new(RwLock::new(stream));
@@ -711,6 +782,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let user = Arc::new(RwLock::new(String::from("")));
     let entity_destroy_stream = stream.clone();
     let block_change_stream = stream.clone();
+    let item_pos_update_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -729,6 +801,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
     let logged_in_inner = logged_in.clone();
     let state_pos_update = state.clone();
+    //let item_pos_update = state.clone();
 
     // spawn or update entities
     tokio::task::spawn(async move {
@@ -761,6 +834,10 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
                     entities::Type::Player(name) => {
                         spawned_named_entity(&mut pos_update_stream, eid, &name, &now).await
                     }
+                    /*entities::Type::Item(item_id, count) => {
+                        println!("hewwo {}", eid);
+                        spawn_pickup_entity(&mut pos_update_stream, eid, item_id, count, &now).await;
+                    }*/
                 };
 
                 let mut entity_spawn = vec![0x1E];
@@ -829,6 +906,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         }
     });
 
+    // keep alive
     tokio::task::spawn(async move {
         loop {
             let packet = vec![0];
@@ -932,6 +1010,31 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         }
     });
 
+    // item updates
+    tokio::task::spawn(async move {
+        //let mut seen_before = HashSet::new();
+        loop {
+            let Ok((eid, item, pos)) = rx_item_server.recv().await else {
+                continue;
+            };
+
+            //if !seen_before.contains(&eid) {
+                let mut pos_update_stream = item_pos_update_stream.write().await;
+
+
+                spawn_pickup_entity(&mut pos_update_stream, eid, item.item_type, item.count, &pos).await;
+
+                let mut entity_spawn = vec![0x1E];
+                entity_spawn.extend_from_slice(&eid.to_be_bytes());
+
+                pos_update_stream.write_all(&entity_spawn).await.unwrap();
+                pos_update_stream.flush().await.unwrap();
+            //}
+
+            //seen_before.insert(eid);
+        }
+    });
+
     loop {
         if let Ok(n) = parse_packet(
             &mut *stream.write().await,
@@ -941,6 +1044,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             &tx_player_pos_and_look,
             &tx_destroy_self_entity,
             &tx_block_updates,
+            &tx_item_updates,
             &logged_in,
             &mut *chat_msg_vec.write().await,
         )
@@ -1008,6 +1112,14 @@ fn incr_time() {
 
 fn get_time() -> i64 {
     TIME.load(Ordering::SeqCst)
+}
+
+fn incr_eidcounter() {
+    EIDCounter.fetch_add(1, Ordering::SeqCst);
+}
+
+fn get_eidcounter() -> i32 {
+    EIDCounter.load(Ordering::SeqCst)
 }
 
 fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
