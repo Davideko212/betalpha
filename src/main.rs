@@ -616,8 +616,21 @@ async fn parse_packet(
                 stream.flush().await.unwrap();
             }
             0x0A => {
-                let _on_ground = get_u8(&mut buf)? != 0;
+                let on_ground = get_u8(&mut buf)? != 0;
                 // println!("on_ground: {on_ground}");
+
+                let outer_state;
+                {
+                    let mut state = state.write().await;
+
+                    state.position_and_look.on_ground = on_ground;
+                    outer_state = (state.entity_id, state.position_and_look);
+
+                    tx_player_pos_and_look
+                        .send((outer_state.0, outer_state.1, None))
+                        .await
+                        .unwrap();
+                }
             }
 
             0x0B => {
@@ -636,6 +649,7 @@ async fn parse_packet(
                     state.position_and_look.z = z;
                     //state.position_and_look.yaw = yaw;
                     //state.position_and_look.pitch = pitch;
+                    state.position_and_look.on_ground = on_ground;
                     outer_state = (state.entity_id, state.position_and_look);
 
                     tx_player_pos_and_look
@@ -649,13 +663,14 @@ async fn parse_packet(
             0x0C => {
                 let yaw = get_f32(&mut buf)?;
                 let pitch = get_f32(&mut buf)?;
-                let _on_ground = get_u8(&mut buf)? != 0;
+                let on_ground = get_u8(&mut buf)? != 0;
 
                 let outer_state;
                 {
                     let mut state = state.write().await;
                     state.position_and_look.yaw = yaw;
                     state.position_and_look.pitch = pitch;
+                    state.position_and_look.on_ground = on_ground;
                     outer_state = (state.entity_id, state.position_and_look);
                 }
                 tx_player_pos_and_look
@@ -672,7 +687,7 @@ async fn parse_packet(
                 let z = get_f64(&mut buf)?;
                 let yaw = get_f32(&mut buf)?;
                 let pitch = get_f32(&mut buf)?;
-                let _on_ground = get_u8(&mut buf)? != 0;
+                let on_ground = get_u8(&mut buf)? != 0;
                 let outer_state;
                 {
                     let mut state = state.write().await;
@@ -681,6 +696,7 @@ async fn parse_packet(
                     state.position_and_look.z = z;
                     state.position_and_look.yaw = yaw;
                     state.position_and_look.pitch = pitch;
+                    state.position_and_look.on_ground = on_ground;
                     outer_state = (state.entity_id, state.position_and_look);
                 }
                 tx_player_pos_and_look
@@ -713,6 +729,7 @@ async fn parse_packet(
                         z: z as f64 + 0.5,
                         yaw: 0.0,
                         pitch: 0.0,
+                        on_ground: true,
                     };
                     let item = Item {
                         item_type: get_block_id(chunks, x, y, z) as i16,
@@ -778,6 +795,7 @@ pub struct State {
     logged_in: bool,
     position_and_look: PositionAndLook,
     inventory: Inventory,
+    health: i8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -787,6 +805,7 @@ pub struct PositionAndLook {
     z: f64,
     yaw: f32,
     pitch: f32,
+    on_ground: bool,
 }
 
 async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) {
@@ -818,6 +837,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let item_pickup_stream = stream.clone();
     let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item, PositionAndLook)>::new()));
     let dropped_items_clone = dropped_items.clone();
+    let health_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -829,12 +849,14 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             z: 0.,
             yaw: 0.,
             pitch: 0.,
+            on_ground: true,
         },
         inventory: Inventory {
             main: [Item::default(); 36],
             equipped: [Item::default(); 4],
             crafting: [Item::default(); 4],
-        }
+        },
+        health: 20
     }));
 
     let logged_in = Arc::new(AtomicBool::new(false));
@@ -842,6 +864,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let logged_in_inner = logged_in.clone();
     let state_pos_update = state.clone();
     let item_pos_update = state.clone();
+    let health_update = state.clone();
 
     // spawn or update entities
     tokio::task::spawn(async move {
@@ -1115,6 +1138,34 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             pickup_stream.flush().await.unwrap();
 
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    });
+
+    let mut last_ground_pos = health_update.clone().read().await.position_and_look;
+    let mut was_airborne = false;
+    // fall damage
+    tokio::task::spawn(async move {
+        loop {
+            let mut health_update_stream = health_stream.write().await;
+            let temp = health_update.clone();
+            let player_state = temp.write().await;
+            println!("falling: {}", !player_state.position_and_look.on_ground);
+
+            if player_state.position_and_look.on_ground {
+                let diff = last_ground_pos.y - player_state.position_and_look.y;
+                if was_airborne && diff > 3. {
+                    let mut update_health = vec![0x08];
+                    update_health.extend_from_slice(&((player_state.health as f64 - diff + 3.) as i8).to_be_bytes());
+                    health_update_stream.write_all(&update_health).await.unwrap();
+                }
+
+                last_ground_pos = player_state.position_and_look;
+            } else {
+                was_airborne = true;
+            }
+
+            health_update_stream.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });
 

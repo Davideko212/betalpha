@@ -7,9 +7,8 @@
     <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="WIP Inventory management">
+    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="Item pickup (buggy)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/entities.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/entities.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/main.rs" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -87,7 +86,8 @@
       <workItem from="1704834237213" duration="5917000" />
       <workItem from="1704908747680" duration="1964000" />
       <workItem from="1704992901916" duration="422000" />
-      <workItem from="1705102759908" duration="3055000" />
+      <workItem from="1705102759908" duration="3537000" />
+      <workItem from="1705157297081" duration="2185000" />
     </task>
     <task id="LOCAL-00001" summary="Volatile block breaking">
       <option name="closed" value="true" />
@@ -113,7 +113,15 @@
       <option name="project" value="LOCAL" />
       <updated>1705002997287</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Item pickup (buggy)">
+      <option name="closed" value="true" />
+      <created>1705106273718</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1705106273718</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -134,6 +142,7 @@
     <MESSAGE value="Volatile block breaking" />
     <MESSAGE value="First item dropping/spawning implementation" />
     <MESSAGE value="WIP Inventory management" />
-    <option name="LAST_COMMIT_MESSAGE" value="WIP Inventory management" />
+    <MESSAGE value="Item pickup (buggy)" />
+    <option name="LAST_COMMIT_MESSAGE" value="Item pickup (buggy)" />
   </component>
 </project>
