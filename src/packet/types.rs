@@ -2,7 +2,7 @@ mod to_client_packets {
     use super::super::parse::PacketSerializer;
     use super::super::PacketError;
     use crate::packet::{
-        parse::{Deserialize, PacketDeserializer},
+        deserialize_i16, deserialize_i32, deserialize_i8, deserialize_u16, parse::Deserialize,
         Serialize,
     };
     use betalpha_derive::{serialize, Deserialize};
@@ -35,13 +35,71 @@ mod to_client_packets {
     pub struct TimeUpdatePacket {
         pub time: u64,
     }
-    #[serialize(0x05)]
-    #[derive(Debug, Clone, Deserialize)]
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct Item {
+        pub item_id: i16,
+        pub count: i8,
+        pub uses: i16,
+    }
+
+    // #[serialize(0x05)]
+    #[derive(Debug, Clone)]
     pub struct PlayerInventoryPacket {
         pub inventory_type: i32,
         pub count: i16,
-        pub payload: Vec<u8>,
+        pub items: Vec<Option<Item>>,
     }
+
+    impl Serialize for PlayerInventoryPacket {
+        fn serialize(&self) -> Result<Vec<u8>, PacketError> {
+            let mut serializer = PacketSerializer::default();
+            serializer.serialize_u8(0x05)?;
+            serializer.serialize_i32(self.inventory_type)?;
+            serializer.serialize_i16(self.count)?;
+            for item in &self.items {
+                match item {
+                    Some(item) => {
+                        serializer.serialize_i16(item.item_id)?;
+                        serializer.serialize_i8(item.count)?;
+                        serializer.serialize_i16(item.uses)?;
+                    }
+                    None => serializer.serialize_i16(-1)?,
+                }
+            }
+            Ok(serializer.output)
+        }
+    }
+
+    impl Deserialize for PlayerInventoryPacket {
+        fn nested_deserialize(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Self, PacketError> {
+            let inventory_type = deserialize_i32(cursor)?;
+            let count = deserialize_i16(cursor)?;
+            let mut items = vec![None; count as usize];
+
+            for idx in 0..count {
+                let item_id = deserialize_i16(cursor)?;
+
+                if item_id == -1 {
+                    continue;
+                }
+
+                let count = deserialize_i8(cursor)?;
+                let uses = deserialize_i16(cursor)?;
+                items[idx as usize] = Some(Item {
+                    item_id,
+                    count,
+                    uses,
+                });
+            }
+            Ok(PlayerInventoryPacket {
+                inventory_type,
+                count,
+                items,
+            })
+        }
+    }
+
     #[serialize(0x06)]
     #[derive(Debug, Clone, Deserialize)]
     pub struct SpawnPositionPacket {
@@ -59,7 +117,7 @@ mod to_client_packets {
     pub struct RespawnPacket;
     #[serialize(0x0D)]
     #[derive(Debug, Clone, Deserialize)]
-    pub struct PlayerPositionLookPacket {
+    pub struct ServerPositionLookPacket {
         pub x: f64,
         pub stance: f64,
         pub y: f64,
@@ -84,13 +142,13 @@ mod to_client_packets {
     #[serialize(0x12)]
     #[derive(Debug, Clone, Deserialize)]
     pub struct AnimationPacket {
-        pub entity_id: u32,
+        pub entity_id: i32,
         pub animate: u8,
     }
     #[serialize(0x14)]
     #[derive(Debug, Clone, Deserialize)]
     pub struct NamedEntitySpawnPacket {
-        pub entity_id: u32,
+        pub entity_id: i32,
         pub name: String,
         pub x: i32,
         pub y: i32,
@@ -149,7 +207,7 @@ mod to_client_packets {
     #[serialize(0x1D)]
     #[derive(Debug, Clone, Deserialize)]
     pub struct DestroyEntityPacket {
-        pub entity_id: u32,
+        pub entity_id: i32,
     }
     #[serialize(0x1E)]
     #[derive(Debug, Clone, Deserialize)]
@@ -255,9 +313,10 @@ mod to_client_packets {
 
     impl Deserialize for MultiBlockChangePacket {
         fn nested_deserialize(cursor: &mut Cursor<&[u8]>) -> Result<Self, PacketError> {
-            let (_n, chunk_x): (usize, i32) = PacketDeserializer::deserialize_i32(cursor)?;
-            let (_n, chunk_y): (usize, i32) = PacketDeserializer::deserialize_i32(cursor)?;
-            let (_n, array_size): (usize, u16) = PacketDeserializer::deserialize_u16(cursor)?;
+            let chunk_x = deserialize_i32(cursor)?;
+            let chunk_y = deserialize_i32(cursor)?;
+            let array_size = deserialize_u16(cursor)?;
+
             let remaining = cursor.chunk();
             let coordinate_array = remaining[0..array_size as usize * 2]
                 .to_vec()
@@ -283,8 +342,8 @@ mod to_client_packets {
         pub x: i32,
         pub y: i8,
         pub z: i32,
-        pub block_type: u8,
-        pub block_metadata: u8,
+        pub block_type: i8,
+        pub block_metadata: i8,
     }
     #[serialize(0x3B)]
     #[derive(Debug, Clone, Deserialize)]
@@ -392,16 +451,16 @@ pub mod to_server_packets {
         pub face: u8,
     }
     #[serialize(0x0F)]
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Copy, Deserialize)]
     pub struct PlayerBlockPlacementPacket {
-        pub item_id: u16,
+        pub item_id: i16,
         pub x: i32,
         pub y: i8,
         pub z: i32,
-        pub face: u8,
+        pub face: i8,
     }
     #[serialize(0x10)]
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, Copy, Deserialize)]
     pub struct HoldingChangePacket {
         pub _unused: i32,
         pub item_id: u16,
