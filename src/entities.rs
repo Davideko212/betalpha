@@ -44,9 +44,9 @@ pub async fn spawn_pickup_entity(
 
     pickup_entity_spawn.extend_from_slice(&item_id.to_be_bytes());
     pickup_entity_spawn.extend_from_slice(&count.to_be_bytes());
-    let x = ((pos_and_look.x + 0.5) * 32.).round() as i32;
+    let x = (pos_and_look.x * 32.).round() as i32;
     let y = (pos_and_look.y * 32.).round() as i32;
-    let z = ((pos_and_look.z + 0.5) * 32.).round() as i32;
+    let z = (pos_and_look.z * 32.).round() as i32;
 
     pickup_entity_spawn.extend_from_slice(&x.to_be_bytes());
     pickup_entity_spawn.extend_from_slice(&y.to_be_bytes());

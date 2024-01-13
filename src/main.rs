@@ -8,6 +8,7 @@ use std::{
         Arc,
     },
 };
+use std::ops::Deref;
 use std::os::raw::c_ulong;
 use std::sync::atomic::AtomicI64;
 
@@ -707,9 +708,9 @@ async fn parse_packet(
                         metadata: 0x00,
                     };
                     let pos = PositionAndLook {
-                        x: x as f64,
+                        x: x as f64 + 0.5,
                         y: y as f64,
-                        z: z as f64,
+                        z: z as f64 + 0.5,
                         yaw: 0.0,
                         pitch: 0.0,
                     };
@@ -743,6 +744,10 @@ async fn parse_packet(
                     metadata: 0x00,
                 };
                 tx_blocks.send(block).await.unwrap();
+            }
+            0x10 => {
+                let _unused = get_i32(&mut buf)?;
+                let id = get_u16(&mut buf)? as i16;
             }
             0x12 => {
                 let pid = get_i32(&mut buf)?;
@@ -811,7 +816,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     let block_change_stream = stream.clone();
     let item_pos_update_stream = stream.clone();
     let item_pickup_stream = stream.clone();
-    let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item)>::new()));
+    let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item, PositionAndLook)>::new()));
     let dropped_items_clone = dropped_items.clone();
 
     let state = Arc::new(RwLock::new(State {
@@ -836,7 +841,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
     let logged_in_inner = logged_in.clone();
     let state_pos_update = state.clone();
-    //let item_pos_update = state.clone();
+    let item_pos_update = state.clone();
 
     // spawn or update entities
     tokio::task::spawn(async move {
@@ -1058,7 +1063,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
 
 
                 spawn_pickup_entity(&mut pos_update_stream, eid, item.item_type, item.count, &pos).await;
-                dropped_items.write().await.push((eid, item));
+                dropped_items.write().await.push((eid, item, pos));
 
                 let mut entity_spawn = vec![0x1E];
                 entity_spawn.extend_from_slice(&eid.to_be_bytes());
@@ -1075,9 +1080,36 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
     tokio::task::spawn(async move {
         loop {
             let mut pickup_stream = item_pickup_stream.write().await;
+            let temp = item_pos_update.read().await;
+            let player_state = temp.deref();
+            let mut to_delete = Vec::<usize>::new();
 
-            for item in dropped_items_clone.write().await.to_vec() {
+            for (i, item) in dropped_items_clone.write().await.to_vec().iter().enumerate() {
+                //println!("x: {:?} z: {:?}", (player_state.position_and_look.x - item.2.x).abs(), (player_state.position_and_look.z - item.2.z).abs());
+                if ((player_state.position_and_look.x - item.2.x).abs() <= 1.) &&
+                    ((player_state.position_and_look.z - item.2.z).abs() <= 1.) { // TODO: also check y
+                    // collect item
+                    let mut collect_item = vec![0x16];
+                    collect_item.extend_from_slice(&item.0.to_be_bytes());
+                    collect_item.extend_from_slice(&player_state.entity_id.to_be_bytes());
+                    pickup_stream.write_all(&collect_item).await.unwrap();
 
+                    let mut add = vec![0x11];
+                    add.extend_from_slice(&item.1.item_type.to_be_bytes());
+                    add.extend_from_slice(&item.1.count.to_be_bytes());
+                    add.extend_from_slice(&item.1.life.to_be_bytes());
+                    pickup_stream.write_all(&add).await.unwrap();
+
+                    let mut destroy_entity = vec![0x1E];
+                    destroy_entity.extend_from_slice(&item.0.to_be_bytes());
+                    pickup_stream.write_all(&destroy_entity).await.unwrap();
+
+                    to_delete.push(i);
+                }
+            }
+
+            for i in to_delete {
+                dropped_items_clone.write().await.remove(i);
             }
 
             pickup_stream.flush().await.unwrap();
