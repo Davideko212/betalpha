@@ -35,6 +35,7 @@ pub async fn player_position(
         state.position_and_look.x = x;
         state.position_and_look.y = y;
         state.position_and_look.z = z;
+        state.position_and_look.on_ground = on_ground;
         outer_state = (state.entity_id, state.position_and_look);
         eid = state.entity_id;
     }
@@ -65,8 +66,7 @@ pub async fn player_look(
         let mut state = state.write().await;
         state.position_and_look.yaw = yaw;
         state.position_and_look.pitch = pitch;
-
-        state.on_ground = on_ground;
+        state.position_and_look.on_ground = on_ground;
 
         outer_state = (state.entity_id, state.position_and_look);
     }
@@ -104,8 +104,7 @@ pub async fn player_position_and_look(
         state.position_and_look.z = z;
         state.position_and_look.yaw = yaw;
         state.position_and_look.pitch = pitch;
-
-        state.on_ground = on_ground;
+        state.position_and_look.on_ground = on_ground;
         state.stance = stance;
 
         outer_state = (state.entity_id, state.position_and_look);

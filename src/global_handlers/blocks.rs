@@ -5,15 +5,11 @@ use tokio::{
     sync::{broadcast, RwLock},
 };
 
-use crate::{
-    packet::{self, util::SendPacket},
-    world::BlockUpdate,
-    State,
-};
+use crate::{packet::{self, util::SendPacket}, world::BlockUpdate, State, Block};
 
-pub async fn block_updates(
+/*pub async fn block_updates(
     logged_in: Arc<AtomicBool>,
-    mut rx_block_updates: broadcast::Receiver<BlockUpdate>,
+    mut rx_block_updates: broadcast::Receiver<Block>,
     state: Arc<RwLock<State>>,
     stream: Arc<RwLock<TcpStream>>,
 ) {
@@ -65,4 +61,4 @@ pub async fn block_updates(
             .unwrap();
         }
     }
-}
+}*/

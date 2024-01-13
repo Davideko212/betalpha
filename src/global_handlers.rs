@@ -12,7 +12,7 @@ pub use blocks::*;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::{entities, packet::PlayerBlockPlacementPacket, world::BlockUpdate, PositionAndLook};
+use crate::{entities, packet::PlayerBlockPlacementPacket, world::BlockUpdate, PositionAndLook, Block, Item};
 use std::collections::HashMap;
 
 pub struct CollectionCenter {
@@ -27,8 +27,10 @@ pub struct CollectionCenter {
     pub tx_destroy_entities: broadcast::Sender<i32>,
     pub rx_animation: mpsc::Receiver<(i32, Animation)>,
     pub tx_broadcast_animations: broadcast::Sender<(i32, Animation)>,
-    pub rx_block_updates: mpsc::Receiver<BlockUpdate>,
-    pub tx_broadcast_block_updates: broadcast::Sender<BlockUpdate>,
+    pub rx_block_updates: mpsc::Receiver<Block>,
+    pub tx_broadcast_block_updates: broadcast::Sender<Block>,
+    pub rx_item_updates: mpsc::Receiver<(i32, Item, PositionAndLook)>,
+    pub tx_broadcast_item_updates: broadcast::Sender<(i32, Item, PositionAndLook)>,
 }
 
 pub async fn collection_center(
@@ -45,6 +47,8 @@ pub async fn collection_center(
         tx_broadcast_animations,
         mut rx_block_updates,
         tx_broadcast_block_updates,
+        mut rx_item_updates,
+        tx_broadcast_item_updates
     } = collection_center;
 
     loop {
@@ -79,16 +83,22 @@ pub async fn collection_center(
                 .unwrap();
         }
 
+        if let Ok((eid, item, pos_and_look)) = rx_item_updates.try_recv() {
+            tx_broadcast_item_updates
+                .send((
+                    eid,
+                    item,
+                    pos_and_look
+                ))
+                .unwrap();
+        }
+
         if let Ok((eid, animation)) = rx_animation.try_recv() {
             tx_broadcast_animations.send((eid, animation)).unwrap();
         }
 
-        if let Ok(block_update) = rx_block_updates.try_recv() {
-            match block_update {
-                BlockUpdate::Place(_) => {}
-                BlockUpdate::Break(_) => {}
-            }
-            tx_broadcast_block_updates.send(block_update).unwrap();
+        if let Ok(block) = rx_block_updates.try_recv() {
+            tx_broadcast_block_updates.send(block).unwrap();
         }
 
         if let Ok(eid) = rx_entity_destroy.try_recv() {
@@ -100,3 +110,75 @@ pub async fn collection_center(
         tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
     }
 }
+
+/*
+// player entities
+tokio::spawn(async move {
+loop {
+// receive position updates, log in (username)
+if let Ok((eid, pos_and_look, username)) = rx_pos_and_look.try_recv() {
+let prev_pos_and_look = entity_positions.insert(eid, pos_and_look);
+if let Some(username) = username {
+entity_username.insert(eid, username);
+}
+
+// if a player logs in (prev pos is none), not moving entities should be sent
+if prev_pos_and_look.is_none() {
+for (eid, pos_and_look) in &entity_positions {
+pos_and_look_update_tx_inner
+.send((
+*eid,
+entities::Type::Player(entity_username[eid].clone()),
+*pos_and_look,
+None,
+))
+.unwrap();
+}
+}
+
+pos_and_look_update_tx_inner
+.send((
+eid,
+entities::Type::Player(entity_username[&eid].clone()),
+pos_and_look,
+prev_pos_and_look,
+))
+.unwrap();
+}
+
+// ITEMS
+// receive position updates
+if let Ok((eid, item, pos_and_look)) = rx_item_updates.try_recv() {
+
+/*tx_item_server_inner
+    .send((
+        eid,
+        entities::Type::Player(entity_username[&eid].clone()),
+        pos_and_look,
+        prev_pos_and_look,
+    ))
+    .unwrap();*/
+tx_item_server_inner
+.send((
+eid,
+item,
+pos_and_look
+))
+.unwrap();
+}
+
+if let Ok(block) = rx_block_updates.try_recv() {
+tx_block_server_inner.send(block).unwrap();
+}
+
+if let Ok(eid) = rx_entity_destroy.try_recv() {
+entity_positions.remove(&eid);
+entity_username.remove(&eid);
+
+tx_destroy_entities_inner.send(eid).unwrap();
+tx_destroy_items_inner.send(eid).unwrap();
+}
+
+tokio::time::sleep(std::time::Duration::from_secs_f64(0.0001)).await;
+}
+});*/

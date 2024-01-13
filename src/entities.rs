@@ -44,7 +44,8 @@ pub async fn spawn_pickup_entity(
     item_id: i16,
     count: i8,
     pos_and_look: &PositionAndLook,
-) {
+) -> Result<(), packet::PacketError> {
+    println!("MEOW");
     let mut pickup_entity_spawn = vec![0x15];
     pickup_entity_spawn.extend_from_slice(&eid.to_be_bytes());
 
@@ -59,6 +60,17 @@ pub async fn spawn_pickup_entity(
     pickup_entity_spawn.extend_from_slice(&z.to_be_bytes());
     pickup_entity_spawn.extend_from_slice(&[0, 0, 0]);
 
-    stream.write_all(&pickup_entity_spawn).await.unwrap();
-    stream.flush().await.unwrap();
+    packet::to_client_packets::PickupSpawnPacket {
+        entity_id: eid,
+        item_id,
+        count,
+        x,
+        y,
+        z,
+        rotation: 0,
+        pitch: 0,
+        roll: 0,
+    }
+        .send(stream)
+        .await
 }

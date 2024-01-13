@@ -1,4 +1,4 @@
-mod to_client_packets {
+pub mod to_client_packets {
     use super::super::parse::PacketSerializer;
     use super::super::PacketError;
     use crate::packet::{
@@ -160,9 +160,9 @@ mod to_client_packets {
     #[serialize(0x15)]
     #[derive(Debug, Clone, Deserialize)]
     pub struct PickupSpawnPacket {
-        pub entity_id: u32,
-        pub item_id: u16,
-        pub count: u8,
+        pub entity_id: i32,
+        pub item_id: i16,
+        pub count: i8,
         pub x: i32,
         pub y: i32,
         pub z: i32,

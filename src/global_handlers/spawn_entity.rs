@@ -44,7 +44,7 @@ pub async fn spawn_entities(
         }
 
         // TODO: add eid is in reach check, unload/destroy entity
-        // FIXME: could potentially receive a lot of data / entity information that is intantly discarded
+        // FIXME: could potentially receive a lot of data / entity information that is instantly discarded
 
         // println!(
         //     "i am: {}, moved: {eid} {now:?}, prev: {prev:?}",
@@ -56,11 +56,13 @@ pub async fn spawn_entities(
 
             match ty {
                 entities::Type::Player(name) => {
-                    spawned_named_entity(&mut pos_update_stream, eid, &name, &now)
-                        .await
-                        .unwrap()
+                    spawned_named_entity(&mut pos_update_stream, eid, &name, &now).await
                 }
-            };
+                /*entities::Type::Item(item_id, count) => {
+                    println!("hewwo {}", eid);
+                    spawn_pickup_entity(&mut pos_update_stream, eid, item_id, count, &now).await;
+                }*/
+            }.expect("TODO: panic message");
 
             let mut entity_spawn = vec![0x1E];
             entity_spawn.extend_from_slice(&eid.to_be_bytes());
@@ -77,8 +79,16 @@ pub async fn spawn_entities(
             let x = ((now.x - prev.x) * 32.).round() as i8;
             let y = ((now.y - prev.y) * 32.).round() as i8;
             let z = ((now.z - prev.z) * 32.).round() as i8;
+            let yawf = ((now.yaw / 360.) * 255.) % 255.;
+            let pitch = (((now.pitch / 360.) * 255.) % 255.) as i8;
 
-            let (yaw, pitch) = look_to_i8_range(now.yaw, now.pitch);
+            let mut yaw = yawf as i8;
+            if yawf < -128. {
+                yaw = 127 - (yawf + 128.).abs() as i8
+            }
+            if yawf > 128. {
+                yaw = -128 + (yawf - 128.).abs() as i8
+            }
 
             // println!("yaw: {yawf} {} pitch: {pitch}", yaw);
 
