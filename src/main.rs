@@ -8,6 +8,7 @@ use std::{
     },
 };
 use std::ops::Deref;
+use std::path::Path;
 use std::sync::atomic::AtomicI64;
 
 use bytes::{Buf, BytesMut};
@@ -29,7 +30,7 @@ use tokio::{
 };
 use regex::Regex;
 use rand::{Rng, thread_rng};
-use world::{load_demo::load_entire_world, BlockUpdate, Chunk};
+use world::*;
 
 // if other clients want to interact with this client
 mod global_handlers;
@@ -132,10 +133,6 @@ async fn main() {
     // let mut packet_handlers: Vec<PacketHandler> = vec![force_boxed(incomplete)];
     // packet_handlers[0x00] = keep_alive;
 
-    // let mut chunks = Vec::new();
-
-    let chunks = load_entire_world("./World2/");
-    let chunks = &*Box::leak(chunks.into_boxed_slice());
     let (tx_pos_and_look, mut rx_pos_and_look) =
         mpsc::channel::<(i32, PositionAndLook, Option<String>)>(256);
     let (tx_pos_and_look_update, _pos_and_look_update_rx) = broadcast::channel(256);
@@ -193,6 +190,8 @@ async fn main() {
             rx_global_animations: tx_broadcast_animations.subscribe(),
         };
 
+        //println!("{:?}", Path::("World2/").parent().unwrap());
+        let mut world = World::open(Path::new("D:/betalpha/World2")).unwrap();
         let stream = listener.accept().await.unwrap();
         tokio::spawn(async move {
             let rx_entity_movement = &mut channels.rx_entity_movement;
@@ -202,7 +201,7 @@ async fn main() {
             while rx_entity_movement.try_recv().err() != Some(TryRecvError::Empty) {}
             while rx_destroy_entities.try_recv().err() != Some(TryRecvError::Empty) {}
 
-            handle_client(stream.0, chunks, channels).await;
+            handle_client(stream.0, &mut world, channels).await;
         });
     }
 }
@@ -253,7 +252,6 @@ fn get_id() -> i32 {
 async fn parse_packet(
     stream: &mut TcpStream,
     buf: &BytesMut,
-    chunks: &[Chunk],
     state: &RwLock<State>,
     tx_player_pos_and_look: &Sender<(i32, PositionAndLook, Option<String>)>,
     tx_disconnect: &Sender<i32>,
@@ -262,6 +260,7 @@ async fn parse_packet(
     tx_animation: &Sender<(i32, Animation)>,
     logged_in: &AtomicBool,
     chat: &mut Vec<String>,
+    world: &mut World,
 ) -> Result<usize, PacketError> {
     let mut buf = Cursor::new(&buf[..]);
 
@@ -274,7 +273,7 @@ async fn parse_packet(
     while let Ok(packet_id) = get_u8(&mut buf) {
         match packet_id {
             0 => keep_alive(&mut buf, stream).await?,
-            1 => login(stream, &mut buf, &chunks, logged_in, state, tx_player_pos_and_look).await?,
+            1 => login(stream, &mut buf, &mut *world, logged_in, state, tx_player_pos_and_look).await?,
             // Handshake
             0x02 => {
                 // skip(&mut buf, 1)?;
@@ -352,7 +351,8 @@ async fn parse_packet(
                         on_ground: true,
                     };
                     let item = Item {
-                        item_type: get_block_id(chunks, data.x, data.y, data.z) as i16,
+                        //item_type: get_block_id(chunks, data.x, data.y, data.z) as i16,
+                        item_type: world.get_chunk(data.x, data.z).unwrap().try_lock().unwrap().get_block(0, 0 ,0).unwrap() as i16, // TODO: get the actrual block
                         count: 1,
                         life: 0,
                     };
@@ -434,7 +434,7 @@ pub struct PositionAndLook {
     on_ground: bool,
 }
 
-async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) {
+async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels) {
     let mut buf = BytesMut::with_capacity(SIZE);
 
     let Channels {
@@ -730,7 +730,6 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
         if let Ok(n) = parse_packet(
             &mut *stream.write().await,
             &buf,
-            chunks,
             &state,
             &tx_player_pos_and_look,
             &tx_destroy_self_entity,
@@ -739,6 +738,7 @@ async fn handle_client(stream: TcpStream, chunks: &[Chunk], channels: Channels) 
             &tx_animation,
             &logged_in,
             &mut *chat_msg_vec.write().await,
+            &mut *world
         )
             .await
         {
@@ -814,7 +814,7 @@ fn get_eidcounter() -> i32 {
     EIDCounter.load(Ordering::SeqCst)
 }
 
-fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
+/*fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
     chunks.iter().find(|c| (c.chunk_x == (x >> 4))
         && (c.chunk_z == (z >> 4))).unwrap()
 }
@@ -861,4 +861,4 @@ fn destroy_block(chunks: &[Chunk], x: i32, y: i8, z: i32) {
     let mut index = (y as i32 + ( chunk_z * 128 + ( chunk_x * 128 * 16 ) )) as usize;
     //println!("{index}");
     //chunk.blocks[index % usize::MAX] = 0_u8;
-}
+}*/

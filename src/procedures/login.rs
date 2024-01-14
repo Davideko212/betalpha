@@ -2,6 +2,7 @@ use std::{
     io::Cursor,
     sync::atomic::{AtomicBool, Ordering},
 };
+use std::ops::{Deref};
 
 use tokio::{
     net::TcpStream,
@@ -11,14 +12,14 @@ use tokio::{
 use crate::{
     get_id,
     packet::{self, util::SendPacket, Deserialize, Item, PacketError},
-    world::send_chunk,
     Chunk, PositionAndLook, State,
 };
+use crate::world::{send_chunk, World};
 
 pub async fn login(
     stream: &mut TcpStream,
     buf: &mut Cursor<&[u8]>,
-    spawn_chunks: &[Chunk],
+    world: &mut World,
     logged_in: &AtomicBool,
     state: &RwLock<State>,
     tx_entity: &mpsc::Sender<(i32, PositionAndLook, Option<String>)>,
@@ -51,8 +52,10 @@ pub async fn login(
     }
     logged_in.store(true, Ordering::Relaxed);
 
-    for chunk in spawn_chunks.iter() {
-        send_chunk(chunk, stream).await.unwrap();
+    for z in -5..6 {
+        for x in -5..6 {
+            send_chunk(&world.get_chunk(x, z).unwrap().try_lock().unwrap(), stream).await.unwrap();
+        }
     }
     println!("sent map");
 

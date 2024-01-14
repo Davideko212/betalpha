@@ -5,7 +5,7 @@ use tokio::{
     sync::{broadcast, RwLock},
 };
 
-use crate::{packet::{self, util::SendPacket}, world::BlockUpdate, State, Block};
+//use crate::{packet::{self, util::SendPacket}, world::BlockUpdate, State, Block};
 
 /*pub async fn block_updates(
     logged_in: Arc<AtomicBool>,

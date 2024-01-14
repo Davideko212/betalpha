@@ -7,15 +7,17 @@
     <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="Fall damage">
+    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="post merge clarity">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/entities.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/entities.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/global_handlers.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/global_handlers.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/global_handlers/blocks.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/global_handlers/blocks.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/global_handlers/spawn_entity.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/global_handlers/spawn_entity.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/main.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/packet/types.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/packet/types.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/procedures/passive/position_and_look.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/procedures/passive/position_and_look.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/procedures/login.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/procedures/login.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/world.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/world.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/world/load_demo.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/world/load_demo.rs" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -57,20 +59,21 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "git-widget-placeholder": "main",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "org.rust.cargo.project.model.PROJECT_DISCOVERY": "true",
-    "settings.editor.selected.configurable": "editor.preferences.fonts.default",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;org.rust.cargo.project.model.PROJECT_DISCOVERY&quot;: &quot;true&quot;,
+    &quot;org.rust.disableDetachedFileInspectionD:/betalpha/src/world/load_demo.rs&quot;: &quot;true&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;editor.preferences.fonts.default&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RsExternalLinterProjectSettings">
     <option name="runOnTheFly" value="true" />
     <option name="tool" value="Clippy" />
@@ -94,7 +97,8 @@
       <workItem from="1704992901916" duration="422000" />
       <workItem from="1705102759908" duration="3537000" />
       <workItem from="1705157297081" duration="4570000" />
-      <workItem from="1705164807689" duration="4189000" />
+      <workItem from="1705164807689" duration="7896000" />
+      <workItem from="1705238154784" duration="8784000" />
     </task>
     <task id="LOCAL-00001" summary="Volatile block breaking">
       <option name="closed" value="true" />
@@ -136,7 +140,15 @@
       <option name="project" value="LOCAL" />
       <updated>1705159787622</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="post merge clarity">
+      <option name="closed" value="true" />
+      <created>1705169126759</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1705169126759</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -159,7 +171,8 @@
     <MESSAGE value="WIP Inventory management" />
     <MESSAGE value="Item pickup (buggy)" />
     <MESSAGE value="Fall damage" />
-    <option name="LAST_COMMIT_MESSAGE" value="Fall damage" />
+    <MESSAGE value="post merge clarity" />
+    <option name="LAST_COMMIT_MESSAGE" value="post merge clarity" />
   </component>
   <component name="XSLT-Support.FileAssociations.UIState">
     <expand />

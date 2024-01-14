@@ -12,7 +12,7 @@ pub use blocks::*;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::{entities, packet::PlayerBlockPlacementPacket, world::BlockUpdate, PositionAndLook, Block, Item};
+use crate::{entities, packet::PlayerBlockPlacementPacket, PositionAndLook, Block, Item};
 use std::collections::HashMap;
 
 pub struct CollectionCenter {
