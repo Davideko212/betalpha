@@ -45,7 +45,6 @@ pub async fn spawn_pickup_entity(
     count: i8,
     pos_and_look: &PositionAndLook,
 ) -> Result<(), packet::PacketError> {
-    println!("MEOW");
     let mut pickup_entity_spawn = vec![0x15];
     pickup_entity_spawn.extend_from_slice(&eid.to_be_bytes());
 

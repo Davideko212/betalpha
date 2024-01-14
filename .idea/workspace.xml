@@ -7,17 +7,11 @@
     <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="post merge clarity">
+    <list default="true" id="319fbc1e-7795-411e-ab64-ebd87355feeb" name="Changes" comment="burger pfusch fix (partial)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Cargo.lock" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.lock" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Cargo.toml" beforeDir="false" afterPath="$PROJECT_DIR$/Cargo.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/global_handlers.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/global_handlers.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/global_handlers/blocks.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/global_handlers/blocks.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/main.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/procedures/login.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/procedures/login.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/utils.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils.rs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/world.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/world.rs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/world/load_demo.rs" beforeDir="false" afterPath="$PROJECT_DIR$/src/world/load_demo.rs" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -98,7 +92,8 @@
       <workItem from="1705102759908" duration="3537000" />
       <workItem from="1705157297081" duration="4570000" />
       <workItem from="1705164807689" duration="7896000" />
-      <workItem from="1705238154784" duration="8784000" />
+      <workItem from="1705238154784" duration="8923000" />
+      <workItem from="1705266395551" duration="2421000" />
     </task>
     <task id="LOCAL-00001" summary="Volatile block breaking">
       <option name="closed" value="true" />
@@ -148,7 +143,15 @@
       <option name="project" value="LOCAL" />
       <updated>1705169126759</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="burger pfusch fix (partial)">
+      <option name="closed" value="true" />
+      <created>1705249431542</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1705249431542</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -172,7 +175,8 @@
     <MESSAGE value="Item pickup (buggy)" />
     <MESSAGE value="Fall damage" />
     <MESSAGE value="post merge clarity" />
-    <option name="LAST_COMMIT_MESSAGE" value="post merge clarity" />
+    <MESSAGE value="burger pfusch fix (partial)" />
+    <option name="LAST_COMMIT_MESSAGE" value="burger pfusch fix (partial)" />
   </component>
   <component name="XSLT-Support.FileAssociations.UIState">
     <expand />

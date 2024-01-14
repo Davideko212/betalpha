@@ -4,7 +4,7 @@ pub fn lossy_u64_from_base36(input: &str) -> u64 {
     input.chars().filter_map(|c| BASE36_DIGITS.iter().position(|&x| x == c)).rev().enumerate().map(|(index, digit)| (digit as u64) * (36u64.pow(index as u32))).sum()
 }
 
-pub fn base36_from_u64(mut input: u64) -> String {
+pub fn base36_from_i64(mut input: i64) -> String {
     let mut chars = Vec::new();
     if input == 0 {
         return "0".to_string()
@@ -60,6 +60,6 @@ fn test_lossy_u64_from_base36() {
 
 #[test]
 fn test_base36_from_u64() {
-    assert_eq!(base36_from_u64(1234), "ya");
-    assert_eq!(base36_from_u64(12341234), "7cik2");
+    assert_eq!(base36_from_i64(1234), "ya");
+    assert_eq!(base36_from_i64(12341234), "7cik2");
 }

@@ -352,7 +352,7 @@ async fn parse_packet(
                     };
                     let item = Item {
                         //item_type: get_block_id(chunks, data.x, data.y, data.z) as i16,
-                        item_type: world.get_chunk(data.x, data.z).unwrap().try_lock().unwrap().get_block(0, 0 ,0).unwrap() as i16, // TODO: get the actrual block
+                        item_type: world.get_chunk(data.x >> 4, data.z >> 4).unwrap().try_lock().unwrap().get_block((data.x & 15) as u8, (data.y & 127) as u8 ,(data.z & 15) as u8).unwrap() as i16, // TODO: get the actrual block
                         count: 1,
                         life: 0,
                     };
@@ -638,7 +638,6 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
                 continue;
             };
 
-            println!("HAI");
             //if !seen_before.contains(&eid) {
                 let mut pos_update_stream = item_pos_update_stream.write().await;
 

@@ -1,17 +1,20 @@
 use std::cell::RefCell;
 use std::collections::{HashMap};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use nbt::{Blob, from_gzip_reader};
 use serde_json::{Result, Value};
 use nbt::ser::Compound;
+use serde_json::ser::State;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use crate::packet;
 use crate::packet::PacketError;
 use crate::packet::util::SendPacket;
-use crate::utils::base36_from_u64;
+use crate::utils::base36_from_i64;
 use crate::world::util::{read_nbt_bool, read_nbt_byte_array, read_nbt_i32, read_nbt_i64};
 
 mod util {
@@ -71,18 +74,11 @@ impl World {
             let mut file = std::fs::File::open(world_path.join("level.dat"))?;
             let blob: Blob = from_gzip_reader(&mut file)?;
             let data: Value = serde_json::from_str(&serde_json::to_string(blob.get("Data").unwrap()).unwrap()).unwrap();
-            println!("{:?}", data["RandomSeed"]);
 
-            println!("1");
-            println!("{:?}", data["RandomSeed"]);
             let seed = data["RandomSeed"].as_i64().unwrap();
-            println!("2");
             let spawn = [data["SpawnX"].as_i64().unwrap() as i32, data["SpawnY"].as_i64().unwrap() as i32, data["SpawnZ"].as_i64().unwrap() as i32];
-            println!("3");
             let time = data["Time"].as_u64().unwrap();
-            println!("4");
             let size_on_disk = data["SizeOnDisk"].as_u64().unwrap();
-            println!("5");
             let last_played = data["LastPlayed"].as_u64().unwrap();
 
             (seed, spawn, time, size_on_disk, last_played)
@@ -122,7 +118,11 @@ impl World {
     ///
     /// returns: Result<Rc<RefCell<Chunk>, Global>, Error>
     pub fn get_chunk(&mut self, x: i32, z: i32) -> std::io::Result<Arc<Mutex<Chunk>>> {
-        let key = (x as u64) << 4 | z as u64;
+        //println!("meow: {x} {z}");
+        //let key = ((x << 16) & z) as u64;
+        let mut hasher = DefaultHasher::new();
+        let test = x.hash(&mut hasher);
+        let key = ((hasher.finish() as i16 % i16::MAX) as i32 * (z + i16::MAX as i32)) as u64;
         if let Some(chunk) = self.chunks.get(&key) {
             Ok(chunk.clone())
         } else {
@@ -168,20 +168,14 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn load(world_path: &Path, x: i32, z: i32) -> std::io::Result<Self> {
-        //println!("{x} {z}");
-        let (x_string, z_string) = (base36_from_u64(x as u64 % 64), base36_from_u64(z as u64 % 64));
-        let (high_level, low_level) = (base36_from_u64(x as u64 % 64), base36_from_u64(z as u64 % 64));
-        //let file_name = format!("c.{x_string}.{z_string}.dat");
-        println!("{} {}", x_string, z_string);
+        let (high_level, low_level) = (base36_from_i64((x as u8 % 64) as i64), base36_from_i64((z as u8 % 64) as i64));
         let file_name = format!("c.{x}.{z}.dat");
         let file_path = world_path.join(high_level.clone()).join(low_level.clone()).join(file_name);
-        println!("{file_path:?}");
 
         let (terrain_populated, last_update, blocks, data, block_light, sky_light, height_map) = {
             let mut file = std::fs::File::open(file_path)?;
-            let blob = nbt::Blob::from_gzip_reader(&mut file)?;
+            let blob = Blob::from_gzip_reader(&mut file)?;
             let level: Value = serde_json::from_str(&serde_json::to_string(blob.get("Level").unwrap()).unwrap()).unwrap();
-            //println!("{:?}", level["SkyLight"]);
 
             let terrain_populated = level["TerrainPopulated"].as_i64().unwrap() != 0;
             let last_update = level["LastUpdate"].as_i64().unwrap() as u64;
@@ -239,8 +233,7 @@ impl Chunk {
     }
 
     pub fn save(&mut self, world_path: &Path) -> std::io::Result<()> {
-        //let (x_string, z_string) = (base36_from_u64(self.chunk_x as u64), base36_from_u64(self.chunk_z as u64));
-        let (high_level, low_level) = (base36_from_u64(self.chunk_x as u64 % 64), base36_from_u64(self.chunk_z as u64 % 64));
+        let (high_level, low_level) = (base36_from_i64(self.chunk_x as i64), base36_from_i64(self.chunk_z as i64));
         let file_name = format!("c.{}.{}.dat", self.chunk_x, self.chunk_z);
         let file_path = world_path.join(high_level).join(low_level).join(file_name);
 
