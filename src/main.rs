@@ -312,6 +312,20 @@ async fn parse_packet(
             0x07 => {
                 let data = packet::UseEntityPacket::nested_deserialize(&mut buf)?;
             }
+            0x09 => {
+                let mut player = state.write().await;
+                player.health = 20;
+
+                let spawn = world.get_spawn();
+                player.position_and_look = PositionAndLook {
+                    x: spawn[0] as f64,
+                    y: spawn[1] as f64,
+                    z: spawn[2] as f64,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    on_ground: true,
+                }
+            }
             0x0A => {
                 let on_ground = get_u8(&mut buf)? != 0;
                 // println!("on_ground: {on_ground}");
@@ -329,11 +343,16 @@ async fn parse_packet(
                         .unwrap();
                 }
             }
+            0x0B => player_position(&mut buf, state, tx_player_pos_and_look, tx_animation).await?,
+            0x0C => player_look(&mut buf, state, tx_player_pos_and_look).await?,
+            0x0D => player_position_and_look(&mut buf, state, tx_player_pos_and_look, tx_animation).await?,
             0x0E => {
                 let data = packet::PlayerDiggingPacket::nested_deserialize(&mut buf)?;
                 //println!("digging: {status} {x} {y} {z} {face}");
                 //println!("{}", get_block_id(chunks, x, y, z));
                 if data.status == 3 {
+                    let temp = world.get_chunk(data.x >> 4, data.z >> 4).unwrap();
+                    let mut chunk = temp.try_lock().unwrap();
                     //destroy_block(chunks, x, y, z);
                     let block = Block {
                         x: data.x,
@@ -352,12 +371,13 @@ async fn parse_packet(
                     };
                     let item = Item {
                         //item_type: get_block_id(chunks, data.x, data.y, data.z) as i16,
-                        item_type: world.get_chunk(data.x >> 4, data.z >> 4).unwrap().try_lock().unwrap().get_block((data.x & 15) as u8, (data.y & 127) as u8 ,(data.z & 15) as u8).unwrap() as i16, // TODO: get the actrual block
+                        item_type: chunk.get_block((data.x & 15) as u8, (data.y & 127) as u8 ,(data.z & 15) as u8).unwrap() as i16,
                         count: 1,
                         life: 0,
                     };
 
                     tx_blocks.send(block).await.unwrap();
+                    chunk.set_block((data.x & 15) as u8, (data.y & 127) as u8, (data.z & 15) as u8, 0);
                     tx_items
                         .send((get_eidcounter(), item, pos))
                         .await
@@ -368,14 +388,28 @@ async fn parse_packet(
             }
             0x0F => {
                 let data = PlayerBlockPlacementPacket::nested_deserialize(&mut buf)?;
+                let mut block_coords = (data.x, data.y, data.z);
+                match data.face {
+                    0 => block_coords.1 -= 1,
+                    1 => block_coords.1 += 1,
+                    2 => block_coords.2 -= 1,
+                    3 => block_coords.2 += 1,
+                    4 => block_coords.0 -= 1,
+                    5 => block_coords.0 += 1,
+                    _ => panic!()
+                }
 
                 let block = Block {
-                    x: data.x,
-                    y: data.y,
-                    z: data.z,
+                    x: block_coords.0,
+                    y: block_coords.1,
+                    z: block_coords.2,
                     block_type: data.item_id as i8,
                     metadata: 0x00,
                 };
+
+                let temp = world.get_chunk(data.x >> 4, data.z >> 4).unwrap();
+                let mut chunk = temp.try_lock().unwrap();
+                chunk.set_block((data.x & 15) as u8, (data.y & 127) as u8, (data.z & 15) as u8, data.item_id as u8);
                 tx_blocks.send(block).await.unwrap();
             }
             0x10 => {
@@ -391,9 +425,27 @@ async fn parse_packet(
                     .unwrap();
                 // println!("{pid} {arm_swinging}")
             }
-            0x0B => player_position(&mut buf, state, tx_player_pos_and_look, tx_animation).await?,
-            0x0C => player_look(&mut buf, state, tx_player_pos_and_look).await?,
-            0x0D => player_position_and_look(&mut buf, state, tx_player_pos_and_look, tx_animation).await?,
+            0x15 => {
+                let data = packet::to_server_packets::PickupSpawnPacket::nested_deserialize(&mut buf)?;
+                let item = Item {
+                    item_type: data.item_id as i16,
+                    count: data.count as i8,
+                    life: 0,
+                };
+                let pos = PositionAndLook {
+                    x: data.x as f64,
+                    y: data.y as f64,
+                    z: data.z as f64,
+                    yaw: data.roll as f32,
+                    pitch: data.pitch as f32,
+                    on_ground: true,
+                };
+                tx_items
+                    .send((get_eidcounter(), item, pos))
+                    .await
+                    .unwrap();
+                incr_eidcounter();
+            }
             0xff => {
                 // player.should_disconnect = true;
                 let reason = get_string(&mut buf)?;
@@ -466,6 +518,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
     let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item, PositionAndLook)>::new()));
     let dropped_items_clone = dropped_items.clone();
     let health_stream = stream.clone();
+    let player_status_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -496,6 +549,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
     let state_pos_update = state.clone();
     let item_pos_update = state.clone();
     let health_update = state.clone();
+    let status_update = state.clone();
 
     // spawn or update entities
     tokio::task::spawn(global_handlers::spawn_entities(
@@ -639,6 +693,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             };
 
             //if !seen_before.contains(&eid) {
+                println!("{}", item.item_type);
                 let mut pos_update_stream = item_pos_update_stream.write().await;
 
                 spawn_pickup_entity(&mut pos_update_stream, eid, item.item_type, item.count, &pos).await.expect("TODO: panic message");
@@ -688,6 +743,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             }
 
             for i in to_delete {
+                println!("{}", dropped_items_clone.read().await.len());
                 dropped_items_clone.write().await.remove(i);
             }
 
@@ -704,15 +760,18 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
         loop {
             let mut health_update_stream = health_stream.write().await;
             let temp = health_update.clone();
-            let player_state = temp.write().await;
+            let mut player_state = temp.write().await;
             //println!("falling: {}", !player_state.position_and_look.on_ground);
 
             if player_state.position_and_look.on_ground {
                 let diff = last_ground_pos.y - player_state.position_and_look.y;
                 if was_airborne && diff > 3. {
                     let mut update_health = vec![0x08];
-                    update_health.extend_from_slice(&((player_state.health as f64 - diff + 3.) as i8).to_be_bytes());
+                    let new_health = (player_state.health as f64 - diff + 3.) as i8;
+
+                    update_health.extend_from_slice(&new_health.to_be_bytes());
                     health_update_stream.write_all(&update_health).await.unwrap();
+                    player_state.health = new_health;
                 }
 
                 last_ground_pos = player_state.position_and_look;
@@ -721,6 +780,35 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             }
 
             health_update_stream.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    let mut last_health = 20;
+    // player entity status
+    tokio::task::spawn(async move {
+        loop {
+            let mut status_update_stream = player_status_stream.write().await;
+            let temp = status_update.clone();
+            let player_state = temp.write().await;
+
+            println!("{} {}", player_state.health, last_health);
+            if player_state.health >= last_health {
+                continue;
+            }
+
+            let mut entity_status = vec![0x26];
+            entity_status.extend_from_slice(&player_state.entity_id.to_be_bytes());
+            if player_state.health == 0 {
+                entity_status.extend_from_slice(&0x03_i8.to_be_bytes());
+            } else {
+                entity_status.extend_from_slice(&0x02_i8.to_be_bytes());
+            }
+            status_update_stream.write_all(&entity_status).await.unwrap();
+
+            last_health = player_state.health;
+
+            status_update_stream.flush().await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     });

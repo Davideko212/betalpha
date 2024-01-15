@@ -121,8 +121,8 @@ impl World {
         //println!("meow: {x} {z}");
         //let key = ((x << 16) & z) as u64;
         let mut hasher = DefaultHasher::new();
-        let test = x.hash(&mut hasher);
-        let key = ((hasher.finish() as i16 % i16::MAX) as i32 * (z + i16::MAX as i32)) as u64;
+        x.hash(&mut hasher);
+        let key = ((hasher.finish() as i16 % i16::MAX) as i32 * (z + i16::MAX as i32)) as u64; // how not to hash properly 101
         if let Some(chunk) = self.chunks.get(&key) {
             Ok(chunk.clone())
         } else {
@@ -138,7 +138,10 @@ impl World {
     ///
     /// returns: Result<(), Error>
     pub fn unload_chunk(&mut self, x: i32, z: i32) -> std::io::Result<()> {
-        let key = (x as u64) << 4 | z as u64;
+        //let key = (x as u64) << 4 | z as u64;
+        let mut hasher = DefaultHasher::new();
+        x.hash(&mut hasher);
+        let key = ((hasher.finish() as i16 % i16::MAX) as i32 * (z + i16::MAX as i32)) as u64; // how not to hash properly 101
 
         if let Some(chunk) = self.chunks.remove(&key) {
             match chunk.try_lock() {
@@ -151,6 +154,10 @@ impl World {
         } else {
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Chunk is not loaded!"))
         }
+    }
+
+    pub fn get_spawn(&mut self) -> [i32; 3] {
+        self.spawn
     }
 }
 
