@@ -10,6 +10,7 @@ use std::{
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::AtomicI64;
+use std::time::SystemTime;
 
 use bytes::{Buf, BytesMut};
 
@@ -367,7 +368,7 @@ async fn parse_packet(
                         z: data.z as f64 + 0.5,
                         yaw: 0.0,
                         pitch: 0.0,
-                        on_ground: true,
+                        on_ground: false,
                     };
                     let item = Item {
                         //item_type: get_block_id(chunks, data.x, data.y, data.z) as i16,
@@ -426,25 +427,34 @@ async fn parse_packet(
                 // println!("{pid} {arm_swinging}")
             }
             0x15 => {
-                let data = packet::to_server_packets::PickupSpawnPacket::nested_deserialize(&mut buf)?;
+                //let data = packet::to_server_packets::PickupSpawnPacket::nested_deserialize(&mut buf)?; TODO: fix this lol @burger
+                let eid = get_i32(&mut buf)?;
+                let item_id = get_u16(&mut buf)? as i16;
+                let count = get_i8(&mut buf)?;
+                let x = get_i32(&mut buf)?;
+                let y = get_i32(&mut buf)?;
+                let z = get_i32(&mut buf)?;
+                let rotation = get_i8(&mut buf)? as f32;
+                let pitch = get_i8(&mut buf)? as f32;
+                let roll = get_i8(&mut buf)? as f32;
+
                 let item = Item {
-                    item_type: data.item_id as i16,
-                    count: data.count as i8,
+                    item_type: item_id,
+                    count,
                     life: 0,
                 };
                 let pos = PositionAndLook {
-                    x: data.x as f64,
-                    y: data.y as f64,
-                    z: data.z as f64,
-                    yaw: data.roll as f32,
-                    pitch: data.pitch as f32,
-                    on_ground: true,
+                    x: x as f64 / 32.,
+                    y: y as f64 / 32.,
+                    z: z as f64 / 32.,
+                    yaw: roll,
+                    pitch,
+                    on_ground: false,
                 };
                 tx_items
-                    .send((get_eidcounter(), item, pos))
+                    .send((eid, item, pos))
                     .await
                     .unwrap();
-                incr_eidcounter();
             }
             0xff => {
                 // player.should_disconnect = true;
@@ -486,6 +496,13 @@ pub struct PositionAndLook {
     on_ground: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Velocity {
+    x: i16,
+    y: i16,
+    z: i16,
+}
+
 async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels) {
     let mut buf = BytesMut::with_capacity(SIZE);
 
@@ -515,10 +532,12 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
     let block_change_stream = stream.clone();
     let item_pos_update_stream = stream.clone();
     let item_pickup_stream = stream.clone();
-    let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item, PositionAndLook)>::new()));
+    let dropped_items = Arc::new(RwLock::new(Vec::<(i32, Item, PositionAndLook, SystemTime, Velocity)>::new()));
     let dropped_items_clone = dropped_items.clone();
+    let dropped_items_clone_2 = dropped_items.clone();
     let health_stream = stream.clone();
     let player_status_stream = stream.clone();
+    let item_velocity_stream = stream.clone();
 
     let state = Arc::new(RwLock::new(State {
         entity_id: 0,
@@ -693,11 +712,28 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             };
 
             //if !seen_before.contains(&eid) {
-                println!("{}", item.item_type);
-                let mut pos_update_stream = item_pos_update_stream.write().await;
+            let mut pos_update_stream = item_pos_update_stream.write().await;
+
+            let curr_poslook = state_pos_update.read().await.position_and_look;
+            let mut yawf = curr_poslook.yaw % 360.;
+
+            if yawf < -180. {
+                yawf = 180. - (yawf + 180.).abs()
+            }
+            if yawf > 180. {
+                yawf = -180. + (yawf - 180.).abs()
+            }
+
+            yawf = (yawf + 270.) % 360.;
+            //println!("{} {}", curr_poslook.pitch, (5000. * curr_poslook.pitch / 90.) as i16);
 
                 spawn_pickup_entity(&mut pos_update_stream, eid, item.item_type, item.count, &pos).await.expect("TODO: panic message");
-                dropped_items.write().await.push((eid, item, pos));
+                let velocity = Velocity {
+                    x: -(yawf.to_radians().cos() * 5000.) as i16,
+                    y: -(5000. * curr_poslook.pitch / 90.) as i16,
+                    z: -(yawf.to_radians().sin() * 5000.) as i16,
+                }; // for testing purposes
+                dropped_items.write().await.push((eid, item, pos, SystemTime::now(), velocity));
 
                 let mut entity_spawn = vec![0x1E];
                 entity_spawn.extend_from_slice(&eid.to_be_bytes());
@@ -720,8 +756,12 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
 
             for (i, item) in dropped_items_clone.write().await.to_vec().iter().enumerate() {
                 //println!("x: {:?} z: {:?}", (player_state.position_and_look.x - item.2.x).abs(), (player_state.position_and_look.z - item.2.z).abs());
+                //println!("{}", player_state.position_and_look.y - item.2.y);
                 if ((player_state.position_and_look.x - item.2.x).abs() <= 1.) &&
-                    ((player_state.position_and_look.z - item.2.z).abs() <= 1.) { // TODO: also check y
+                    ((player_state.position_and_look.z - item.2.z).abs() <= 1.) &&
+                    ((player_state.position_and_look.y - item.2.y) > -2.) &&
+                    ((player_state.position_and_look.y - item.2.y) < 0.5) &&
+                    (item.3.elapsed().unwrap().as_secs() >= 2) {
                     // collect item
                     let mut collect_item = vec![0x16];
                     collect_item.extend_from_slice(&item.0.to_be_bytes());
@@ -743,7 +783,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             }
 
             for i in to_delete {
-                println!("{}", dropped_items_clone.read().await.len());
+                //println!("{}", dropped_items_clone.read().await.len());
                 dropped_items_clone.write().await.remove(i);
             }
 
@@ -792,7 +832,7 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
             let temp = status_update.clone();
             let player_state = temp.write().await;
 
-            println!("{} {}", player_state.health, last_health);
+            //println!("{} {}", player_state.health, last_health);
             if player_state.health >= last_health {
                 continue;
             }
@@ -810,6 +850,105 @@ async fn handle_client(stream: TcpStream, world: &mut World, channels: Channels)
 
             status_update_stream.flush().await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    // item movement + velocity calculations
+    tokio::task::spawn(async move {
+        loop {
+            let mut velocity_stream = item_velocity_stream.write().await;
+            let mut collector = Vec::<(i32, Item, PositionAndLook, SystemTime, Velocity)>::new();
+
+            for item in dropped_items_clone_2.write().await.to_vec().iter() {
+                let mut item = *item;
+                let mut vel = item.4;
+
+                let old = item.2;
+                let move_x = vel.x as f64 / 32000.;
+                let move_y = vel.y as f64 / 32000.;
+                let move_z = vel.z as f64 / 32000.;
+
+                // if item moves to new block coordinate
+                let new_x = (item.2.x + move_x).floor() as i32;
+                if new_x as f64 != item.2.x {
+                    /*let block = world.get_chunk(new_x >> 4, item.2.z as i32 >> 4).unwrap().try_lock().unwrap()
+                        .get_block((new_x & 15) as u8, (item.2.y as i32 & 127) as u8 ,(item.2.z as i32 & 15) as u8).unwrap();*/
+                    let block = 0u8;
+                    if block != 0 {
+                        vel.x = 0;
+                        item.2.x = new_x as f64;
+                    } else {
+                        item.2.x += move_x;
+                    }
+                }
+
+                let new_y = (item.2.y + move_y).floor() as i32;
+                if new_y as f64 != item.2.y {
+                    /*let block = world.get_chunk(new_x >> 4, item.2.z as i32 >> 4).unwrap().try_lock().unwrap()
+                        .get_block((new_x & 15) as u8, (item.2.y as i32 & 127) as u8 ,(item.2.z as i32 & 15) as u8).unwrap();*/
+                    let block = 0u8;
+                    if block != 0 {
+                        vel.y = 0;
+                        item.2.y = new_y as f64;
+                    } else {
+                        item.2.y += move_y;
+                    }
+                }
+
+                let new_z = (item.2.z + move_z).floor() as i32;
+                if new_z as f64 != item.2.z {
+                    /*let block = world.get_chunk(new_x >> 4, item.2.z as i32 >> 4).unwrap().try_lock().unwrap()
+                        .get_block((new_x & 15) as u8, (item.2.y as i32 & 127) as u8 ,(item.2.z as i32 & 15) as u8).unwrap();*/
+                    let block = 0u8;
+                    if block != 0 {
+                        vel.z = 0;
+                        item.2.z = new_z as f64;
+                    } else {
+                        item.2.z += move_z;
+                    }
+                }
+
+                vel.x = (vel.x as f64 * 0.5).floor() as i16;
+                //println!("muga: {}", vel.x);
+                /*if vel.y > -28000 {
+                    vel.y -= -500;
+                    if vel.y < -28000 {
+                        vel.y = -28000;
+                    }
+                }*/
+                vel.z = (vel.z as f64 * 0.5).floor() as i16;
+
+                item.4 = vel;
+                collector.push(item);
+
+                //println!("{} {} {}", vel.y, old.y + move_y, (old.y + move_y) as u8);
+                let mut item_velocity = vec![0x1C];
+                item_velocity.extend_from_slice(&item.0.to_be_bytes());
+                item_velocity.extend_from_slice(&vel.x.to_be_bytes());
+                //item_velocity.extend_from_slice(&vel.y.to_be_bytes());
+                item_velocity.extend_from_slice(&0_i16.to_be_bytes());
+                item_velocity.extend_from_slice(&vel.z.to_be_bytes());
+                velocity_stream.write_all(&item_velocity).await.unwrap();
+
+                //println!("la: {}", (old.x + move_x) as u8);
+                //println!("{} {}", old.x, move_x);
+                //println!("le: {}", old.x + move_x);
+                /*let mut item_move = vec![0x1F];
+                item_move.extend_from_slice(&item.0.to_be_bytes());
+                item_move.extend_from_slice(&((old.x + move_x) as i8).to_be_bytes());
+                //item_move.extend_from_slice(&((old.y + move_y) as u8).to_be_bytes());
+                item_move.extend_from_slice(&(0_i8.to_be_bytes()));
+                item_move.extend_from_slice(&((old.z + move_z) as i8).to_be_bytes());
+                velocity_stream.write_all(&item_move).await.unwrap();*/
+            }
+
+            dropped_items_clone_2.write().await.clear();
+            for i in collector {
+                dropped_items_clone_2.write().await.push(i);
+            }
+
+            velocity_stream.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     });
 
@@ -899,6 +1038,10 @@ fn incr_eidcounter() {
 
 fn get_eidcounter() -> i32 {
     EIDCounter.load(Ordering::SeqCst)
+}
+
+async fn testerino(world: &World) -> i32 {
+    return 4;
 }
 
 /*fn get_chunk_from_block(chunks: &[Chunk], x: i32, z: i32) -> &Chunk {
